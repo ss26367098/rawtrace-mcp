@@ -45,6 +45,8 @@
     "zod-to-json-schema": "^3.25.2"
   },
   "devDependencies": {
+    "@emnapi/core": "^1.11.1",
+    "@emnapi/runtime": "^1.11.1",
     "@eslint/js": "^9.39.1",
     "@types/node": "^24.10.1",
     "@types/ws": "^8.18.1",
