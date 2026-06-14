@@ -16,7 +16,7 @@
     "node": ">=22"
   },
   "bin": {
-    "rawtrace-mcp": "./dist/cli.js"
+    "rawtrace-mcp": "dist/cli.js"
   },
   "files": [
     "dist",
