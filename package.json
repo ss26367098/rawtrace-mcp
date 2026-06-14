@@ -4,6 +4,14 @@
   "description": "A Playwright-powered MCP server for raw DOM mutation and network event tracing.",
   "type": "module",
   "license": "MIT",
+  "homepage": "https://github.com/ss26367098/rawtrace-mcp#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ss26367098/rawtrace-mcp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ss26367098/rawtrace-mcp/issues"
+  },
   "engines": {
     "node": ">=22"
   },
