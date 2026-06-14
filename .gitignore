@@ -1,0 +1,18 @@
+node_modules/
+dist/
+coverage/
+.vitest/
+.DS_Store
+Thumbs.db
+npm-debug.log*
+rawtrace-mcp-handoff.md
+
+# RawTrace output can contain cookies, tokens, bodies, and personal data.
+rawtrace-traces/
+trace_*/
+*.rawtrace.zip
+
+# Auto-checkin is a separate private dogfood project.
+自动签到/
+tests/real-run/auto-checkin-rawtrace-real-run.mjs
+tests/real-run/workbench-real-all-sites.mjs

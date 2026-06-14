@@ -1,0 +1,9 @@
+node_modules/
+dist/
+coverage/
+rawtrace-traces/
+
+# Auto-checkin is a separate private dogfood project.
+自动签到/
+tests/real-run/auto-checkin-rawtrace-real-run.mjs
+tests/real-run/workbench-real-all-sites.mjs
