@@ -9,6 +9,7 @@ import {
   DEFAULT_READ_EVENTS_LIMIT,
   DEFAULT_SEARCH_EVENTS_LIMIT,
   DEFAULT_SEARCH_BODIES_LIMIT,
+  DEFAULT_INSPECTION_MAX_BYTES,
   DOM_INLINE_HTML_LIMIT,
   DOM_INLINE_TEXT_LIMIT,
   EVENT_STREAMS,
@@ -313,6 +314,102 @@ export class TraceSession {
     }
 
     return { matches, totalScanned, hasMore };
+  }
+
+  async readArtifact(input: {
+    path?: string;
+    ref?: BodyRef;
+    maxBytes?: number;
+    asText?: boolean;
+    parseJson?: boolean;
+  }): Promise<Record<string, unknown>> {
+    await this.flush();
+    const requestedPath = input.ref?.path ?? input.path;
+    if (!requestedPath) {
+      throw new RawTraceError("ARTIFACT_PATH_REQUIRED", "monitor_read_artifact requires path or ref.");
+    }
+    if (input.ref && input.path && input.path !== input.ref.path) {
+      throw new RawTraceError("ARTIFACT_PATH_MISMATCH", "monitor_read_artifact path must match ref.path when both are provided.", {
+        path: input.path,
+        refPath: input.ref.path
+      });
+    }
+
+    const absolutePath = this.safeTracePath(requestedPath);
+    if (!absolutePath) {
+      throw new RawTraceError("ARTIFACT_PATH_OUTSIDE_TRACE", "monitor_read_artifact can only read files inside the trace output directory.", {
+        path: requestedPath
+      });
+    }
+
+    const artifactStat = await stat(absolutePath).catch((error: unknown) => {
+      throw new RawTraceError("ARTIFACT_READ_FAILED", `Unable to stat trace artifact: ${requestedPath}`, {
+        path: requestedPath,
+        cause: error instanceof Error ? error.message : String(error)
+      });
+    });
+    if (!artifactStat.isFile()) {
+      throw new RawTraceError("ARTIFACT_NOT_FILE", `Trace artifact is not a file: ${requestedPath}`, {
+        path: requestedPath
+      });
+    }
+
+    const digest = await hashFile(absolutePath);
+    if (input.ref && input.ref.sha256 !== digest) {
+      throw new RawTraceError("ARTIFACT_HASH_MISMATCH", "Trace artifact sha256 does not match the provided ref.", {
+        path: requestedPath,
+        expectedSha256: input.ref.sha256,
+        actualSha256: digest
+      });
+    }
+
+    const maxBytes = normalizeArtifactMaxBytes(input.maxBytes);
+    const truncated = artifactStat.size > maxBytes;
+    const result: Record<string, unknown> = {
+      path: requestedPath,
+      outputPath: absolutePath,
+      byteLength: artifactStat.size,
+      sha256: digest,
+      encoding: input.ref?.encoding,
+      maxBytes,
+      truncated
+    };
+
+    if (truncated) {
+      result.contentSkippedReason = "byteLength_exceeds_maxBytes";
+      return result;
+    }
+
+    const bytes = await readFile(absolutePath).catch((error: unknown) => {
+      throw new RawTraceError("ARTIFACT_READ_FAILED", `Unable to read trace artifact: ${requestedPath}`, {
+        path: requestedPath,
+        cause: error instanceof Error ? error.message : String(error)
+      });
+    });
+
+    if (input.parseJson) {
+      const text = bytes.toString("utf8");
+      try {
+        result.json = JSON.parse(text) as unknown;
+        result.contentEncoding = "json";
+      } catch (error) {
+        throw new RawTraceError("ARTIFACT_PARSE_FAILED", `Unable to parse trace artifact as JSON: ${requestedPath}`, {
+          path: requestedPath,
+          cause: error instanceof Error ? error.message : String(error)
+        });
+      }
+      return result;
+    }
+
+    if (input.asText || input.ref?.encoding === "utf8" || looksLikeTextPath(requestedPath)) {
+      result.text = bytes.toString("utf8");
+      result.contentEncoding = "utf8";
+      return result;
+    }
+
+    result.base64 = bytes.toString("base64");
+    result.contentEncoding = "base64";
+    return result;
   }
 
   async exportZip(targetPath?: string): Promise<string> {
@@ -687,6 +784,29 @@ function normalizeLimit(limit: number, max: number, toolName: "monitor_read_even
     );
   }
   return safeLimit;
+}
+
+function normalizeArtifactMaxBytes(value: number | undefined): number {
+  const maxBytes = Math.trunc(value ?? DEFAULT_INSPECTION_MAX_BYTES);
+  if (!Number.isFinite(maxBytes) || maxBytes < 0) {
+    throw new RawTraceError("INVALID_MAX_BYTES", "monitor_read_artifact maxBytes must be a non-negative integer.");
+  }
+  return maxBytes;
+}
+
+function looksLikeTextPath(path: string): boolean {
+  return /\.(?:css|csv|html?|js|json|map|md|ndjson|svg|text|ts|txt|xml)$/i.test(path);
+}
+
+async function hashFile(path: string): Promise<string> {
+  const hash = createHash("sha256");
+  await new Promise<void>((resolveHash, rejectHash) => {
+    const stream = createReadStream(path);
+    stream.on("data", (chunk) => hash.update(chunk));
+    stream.on("error", rejectHash);
+    stream.on("end", resolveHash);
+  });
+  return hash.digest("hex");
 }
 
 function eventUrlFields(event: TraceEvent): string[] {

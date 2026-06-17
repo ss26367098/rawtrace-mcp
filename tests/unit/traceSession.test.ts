@@ -273,6 +273,46 @@ describe("TraceSession", () => {
     await expect(readFile(join(session.outputDir, ref.path), "utf8")).resolves.toBe(content);
   });
 
+  it("reads trace artifacts safely with maxBytes and hash validation", async () => {
+    const base = await mkdtemp(join(tmpdir(), "rawtrace-test-"));
+    tempDirs.push(base);
+    const session = await TraceSession.create({
+      baseOutputDir: base,
+      captureOptions: {
+        captureDom: true,
+        captureNetwork: true,
+        captureCookies: true,
+        captureBodies: true,
+        captureWebSockets: true,
+        captureConsole: true,
+        captureFrames: true
+      }
+    });
+    const ref = await session.writeArtifact("json_payload", JSON.stringify({ token: "ARTIFACT_TOKEN" }), "utf8", "json");
+
+    const parsed = await session.readArtifact({ ref, parseJson: true });
+    const truncated = await session.readArtifact({ ref, maxBytes: 1, asText: true });
+
+    expect(parsed).toMatchObject({
+      path: ref.path,
+      byteLength: ref.byteLength,
+      sha256: ref.sha256,
+      contentEncoding: "json",
+      json: { token: "ARTIFACT_TOKEN" }
+    });
+    expect(truncated).toMatchObject({
+      path: ref.path,
+      truncated: true,
+      contentSkippedReason: "byteLength_exceeds_maxBytes"
+    });
+    await expect(session.readArtifact({ path: "../outside.txt" })).rejects.toMatchObject({
+      code: "ARTIFACT_PATH_OUTSIDE_TRACE"
+    });
+    await expect(session.readArtifact({ ref: { ...ref, sha256: "bad" } })).rejects.toMatchObject({
+      code: "ARTIFACT_HASH_MISMATCH"
+    });
+  });
+
   it("searches raw network body files by text, URL, status, and sinceSeq", async () => {
     const base = await mkdtemp(join(tmpdir(), "rawtrace-test-"));
     tempDirs.push(base);

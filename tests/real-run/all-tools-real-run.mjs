@@ -22,6 +22,62 @@ const transientText = "rawtrace-transient-node-12345";
 const wsPayload = "rawtrace-ws-payload-12345";
 const consoleErrorText = "rawtrace-console-error-12345";
 const typedText = "rawtrace typed text 12345";
+const publicTools = [
+  "browser_launch",
+  "browser_navigate",
+  "browser_reload",
+  "browser_go_back",
+  "browser_go_forward",
+  "browser_close",
+  "browser_list_tabs",
+  "browser_new_tab",
+  "browser_switch_tab",
+  "browser_close_tab",
+  "browser_get_state",
+  "browser_get_dom",
+  "browser_get_elements",
+  "browser_optimize_selector",
+  "browser_screenshot",
+  "browser_get_network",
+  "browser_get_accessibility",
+  "browser_eval",
+  "browser_get_cookies",
+  "browser_set_cookies",
+  "browser_clear_cookies",
+  "browser_get_storage",
+  "browser_set_storage",
+  "browser_export_storage_state",
+  "browser_import_storage_state",
+  "monitor_start",
+  "monitor_stop",
+  "monitor_list_sessions",
+  "monitor_get_manifest",
+  "monitor_get_summary",
+  "monitor_read_events",
+  "monitor_search_events",
+  "monitor_search_bodies",
+  "monitor_read_artifact",
+  "monitor_export",
+  "browser_click",
+  "browser_type",
+  "browser_press",
+  "browser_hover",
+  "browser_scroll",
+  "browser_select_option",
+  "browser_check",
+  "browser_wait_for_response",
+  "browser_wait_for_response_body",
+  "browser_upload_file",
+  "browser_wait_for_download",
+  "browser_get_downloads",
+  "browser_set_viewport",
+  "browser_grant_permissions",
+  "browser_set_geolocation",
+  "browser_get_forms",
+  "browser_fill_form",
+  "browser_handle_dialog",
+  "browser_wait"
+];
 
 async function main() {
   await assertDistExists();
@@ -46,6 +102,7 @@ async function main() {
     await assertHttpSecurityFails(report);
     await runStdioSmoke(report, demo.url, runRoot);
     await runHttpAllTools(report, demo.url, runRoot);
+    assertAllPublicToolsCalled(report);
 
     report.ok = true;
     console.log(JSON.stringify(report, null, 2));
@@ -178,6 +235,8 @@ async function runHttpAllTools(report, demoUrl, runRoot) {
 
 async function runIsolatedBrowserScenario(report, client, demoUrl, runRoot) {
   const outputDir = join(runRoot, "http-isolated");
+  const uploadPath = join(runRoot, "real-run-upload.txt");
+  await writeFile(uploadPath, "rawtrace real-run upload payload", "utf8");
 
   await callOk(report, client, "browser_launch", { headless: true });
   await callOk(report, client, "browser_navigate", { url: demoUrl, waitUntil: "domcontentloaded" });
@@ -186,8 +245,21 @@ async function runIsolatedBrowserScenario(report, client, demoUrl, runRoot) {
     acknowledgeRawCapture: true,
     outputDir
   });
+  const sessionsRunning = await callOk(report, client, "monitor_list_sessions", {});
+  const manifestRunning = await callOk(report, client, "monitor_get_manifest", {
+    sessionId: started.sessionId
+  });
   await callExpectError(report, client, "browser_get_dom", {}, "RAW_CAPTURE_ACK_REQUIRED");
+  await callExpectError(report, client, "monitor_read_artifact", {
+    acknowledgeRawCapture: true,
+    sessionId: started.sessionId,
+    path: "../outside.txt"
+  }, "ARTIFACT_PATH_OUTSIDE_TRACE");
 
+  const viewportResult = await callOk(report, client, "browser_set_viewport", {
+    width: 777,
+    height: 555
+  });
   const state = await callOk(report, client, "browser_get_state", {
     acknowledgeRawCapture: true
   });
@@ -196,9 +268,47 @@ async function runIsolatedBrowserScenario(report, client, demoUrl, runRoot) {
     mode: "html",
     maxBytes: 10
   });
+  const domArtifactRead = await callOk(report, client, "monitor_read_artifact", {
+    acknowledgeRawCapture: true,
+    sessionId: started.sessionId,
+    ref: domInspection.html.ref,
+    asText: true,
+    maxBytes: 200000
+  });
   const elementsInspection = await callOk(report, client, "browser_get_elements", {
     acknowledgeRawCapture: true,
     textContains: "Submit",
+    limit: 10
+  });
+  const formsInspection = await callOk(report, client, "browser_get_forms", {
+    acknowledgeRawCapture: true,
+    textContains: "Profile",
+    limit: 10
+  });
+  const formFill = await callOk(report, client, "browser_fill_form", {
+    fields: [
+      { name: "profileName", value: "Real Runner" },
+      { label: "Profile Notes", value: "real-run form note" },
+      { selector: "#profile-tier", value: "pro" },
+      { selector: "#profile-enabled", checked: true }
+    ],
+    submitSelector: "#profile-submit",
+    timeoutMs: 5000
+  });
+  const formStatus = await callOk(report, client, "browser_get_dom", {
+    acknowledgeRawCapture: true,
+    selector: "#status",
+    mode: "text"
+  });
+  const uploadResult = await callOk(report, client, "browser_upload_file", {
+    acknowledgeFileAccess: true,
+    selector: "#upload-file",
+    paths: [uploadPath],
+    timeoutMs: 5000
+  });
+  const uploadedFormsInspection = await callOk(report, client, "browser_get_forms", {
+    acknowledgeRawCapture: true,
+    selector: "#upload-file",
     limit: 10
   });
   const optimizedDuplicateSelector = await callOk(report, client, "browser_optimize_selector", {
@@ -228,6 +338,53 @@ async function runIsolatedBrowserScenario(report, client, demoUrl, runRoot) {
   const screenshot = await callOk(report, client, "browser_screenshot", {
     acknowledgeRawCapture: true,
     fullPage: true
+  });
+  const responseBodyPromise = callOk(report, client, "browser_wait_for_response_body", {
+    acknowledgeRawCapture: true,
+    urlContains: "/api/response-body",
+    method: "GET",
+    status: 200,
+    parseJson: true,
+    timeoutMs: 5000
+  });
+  await callOk(report, client, "browser_click", {
+    selector: "#response-body-button",
+    timeoutMs: 5000
+  });
+  const responseBody = await responseBodyPromise;
+  const downloadResult = await callOk(report, client, "browser_wait_for_download", {
+    acknowledgeRawCapture: true,
+    triggerSelector: "#download-link",
+    outputDir: join(runRoot, "downloads"),
+    timeoutMs: 5000
+  });
+  const downloadsInspection = await callOk(report, client, "browser_get_downloads", {
+    limit: 10
+  });
+  await callOk(report, client, "browser_grant_permissions", {
+    acknowledgePermissionChange: true,
+    permissions: ["geolocation"],
+    origin: demoUrl
+  });
+  await callOk(report, client, "browser_set_geolocation", {
+    acknowledgeLocationAccess: true,
+    latitude: 22.3193,
+    longitude: 114.1694,
+    accuracy: 10
+  });
+  await callOk(report, client, "browser_click", {
+    selector: "#geolocation-button",
+    timeoutMs: 5000
+  });
+  await callOk(report, client, "browser_wait", {
+    mode: "quiet",
+    quietMs: 100,
+    timeoutMs: 3000
+  });
+  const geolocationStatus = await callOk(report, client, "browser_get_dom", {
+    acknowledgeRawCapture: true,
+    selector: "#status",
+    mode: "text"
   });
   const tabsBefore = await callOk(report, client, "browser_list_tabs", {});
   const initialPageId = tabsBefore.pages[0].pageId;
@@ -406,6 +563,13 @@ async function runIsolatedBrowserScenario(report, client, demoUrl, runRoot) {
     status: 200,
     limit: 10
   });
+  const bodyArtifactRead = await callOk(report, client, "monitor_read_artifact", {
+    acknowledgeRawCapture: true,
+    sessionId: started.sessionId,
+    ref: bodySearch.matches[0].bodyRef,
+    asText: true,
+    maxBytes: 200000
+  });
   const networkInspection = await callOk(report, client, "browser_get_network", {
     sessionId: started.sessionId,
     urlContains: "/api/delayed",
@@ -447,6 +611,7 @@ async function runIsolatedBrowserScenario(report, client, demoUrl, runRoot) {
   const tabsAfterClose = await callOk(report, client, "browser_list_tabs", {});
   const streamsBeforeStop = await readAllStreams(report, client, started.sessionId, 0, 200);
   const stopped = await callOk(report, client, "monitor_stop", {});
+  const sessionsStopped = await callOk(report, client, "monitor_list_sessions", {});
   const exported = await callOk(report, client, "monitor_export", {
     sessionId: started.sessionId,
     format: "zip"
@@ -465,18 +630,33 @@ async function runIsolatedBrowserScenario(report, client, demoUrl, runRoot) {
     started,
     stopped,
     exported,
+    sessionsRunning,
+    sessionsStopped,
+    manifestRunning,
     summary,
     domSearch,
     networkSearch,
     bodySearch,
+    bodyArtifactRead,
     networkInspection,
     state,
+    viewportResult,
     domInspection,
+    domArtifactRead,
     elementsInspection,
+    formsInspection,
+    formFill,
+    formStatus,
+    uploadResult,
+    uploadedFormsInspection,
     optimizedDuplicateSelector,
     optimizedCheckinSelector,
     optimizedSpacePlaceholder,
     screenshot,
+    responseBody,
+    downloadResult,
+    downloadsInspection,
+    geolocationStatus,
     delayedResponse,
     accessibilityInspection,
     evalInspection,
@@ -563,18 +743,33 @@ async function assertTraceArtifacts({
   started,
   stopped,
   exported,
+  sessionsRunning,
+  sessionsStopped,
+  manifestRunning,
   summary,
   domSearch,
   networkSearch,
   bodySearch,
+  bodyArtifactRead,
   networkInspection,
   state,
+  viewportResult,
   domInspection,
+  domArtifactRead,
   elementsInspection,
+  formsInspection,
+  formFill,
+  formStatus,
+  uploadResult,
+  uploadedFormsInspection,
   optimizedDuplicateSelector,
   optimizedCheckinSelector,
   optimizedSpacePlaceholder,
   screenshot,
+  responseBody,
+  downloadResult,
+  downloadsInspection,
+  geolocationStatus,
   delayedResponse,
   accessibilityInspection,
   evalInspection,
@@ -630,11 +825,11 @@ async function assertTraceArtifacts({
     .map((event) => event.bodyRef)
     .filter((bodyRef) => bodyRef && typeof bodyRef.path === "string");
   assert(responseBodyRefs.length > 0, "Network stream should include response body references", streams.network.events);
-  const bodyRef = responseBodyRefs.find((candidate) => candidate.path.includes("res_")) ?? responseBodyRefs[0];
-  const bodyPath = join(started.outputDir, bodyRef.path);
-  const bodyBytes = await readFile(bodyPath);
-  assert(bodyBytes.byteLength > 0, "Response body reference file should be readable", bodyRef);
+  assert(JSON.stringify(bodyArtifactRead).includes(rawToken), "monitor_read_artifact should read bodyRef content through MCP", bodyArtifactRead);
 
+  assert(JSON.stringify(sessionsRunning).includes(started.sessionId), "monitor_list_sessions should include running session", sessionsRunning);
+  assert(JSON.stringify(sessionsStopped).includes('"status":"stopped"'), "monitor_list_sessions should include stopped session", sessionsStopped);
+  assert(manifestRunning.sessionId === started.sessionId && manifestRunning.status === "running", "monitor_get_manifest should return running manifest", manifestRunning);
   assert(summaryText.includes("/api/search"), "Summary should include request information", summary);
   assert(summaryText.includes("DOM events clustered"), "Summary should include DOM cluster information", summary);
   assert(summaryText.includes(consoleErrorText), "Summary should include console error information", summary);
@@ -642,8 +837,16 @@ async function assertTraceArtifacts({
   assert(JSON.stringify(networkSearch).includes("/api/search"), "monitor_search_events should find API requests", networkSearch);
   assert(JSON.stringify(networkInspection).includes("/api/delayed"), "browser_get_network should find delayed API", networkInspection);
   assert(String(state.title).includes("RawTrace Real Run"), "browser_get_state should return current page title", state);
+  assert(viewportResult.viewport?.width === 777 && viewportResult.viewport?.height === 555, "browser_set_viewport should set active page size", viewportResult);
+  assert(state.viewport?.width === 777 && state.viewport?.height === 555, "browser_get_state should reflect viewport changes", state);
   assert(JSON.stringify(domInspection).includes("body") || JSON.stringify(domInspection).includes("dom_html"), "browser_get_dom should return or reference HTML", domInspection);
+  assert(JSON.stringify(domArtifactRead).includes("RawTrace Real Run"), "monitor_read_artifact should read DOM artifact text", domArtifactRead);
   assert(JSON.stringify(elementsInspection).includes("#submit"), "browser_get_elements should include interactive button", elementsInspection);
+  assert(JSON.stringify(formsInspection).includes("profileName"), "browser_get_forms should include profile form controls", formsInspection);
+  assert(formFill.filledCount === 4 && formFill.submitted === true, "browser_fill_form should fill and submit form", formFill);
+  assert(JSON.stringify(formStatus).includes("profile:Real Runner:pro:true"), "browser_fill_form should update form status", formStatus);
+  assert(uploadResult.uploaded === true && uploadResult.fileCount === 1, "browser_upload_file should upload local file", uploadResult);
+  assert(JSON.stringify(uploadedFormsInspection).includes("real-run-upload.txt"), "browser_get_forms should show uploaded filename", uploadedFormsInspection);
   assert(JSON.stringify(optimizedDuplicateSelector).includes("Selector Target"), "browser_optimize_selector should use semantic anchor for duplicate text", optimizedDuplicateSelector);
   assert(JSON.stringify(optimizedDuplicateSelector).includes("not_unique"), "browser_optimize_selector should report rejected broad selectors", optimizedDuplicateSelector);
   assert(!String(optimizedDuplicateSelector.recommended?.selector).includes("base-ui-_r_dynamic"), "browser_optimize_selector should not recommend dynamic ids", optimizedDuplicateSelector);
@@ -660,6 +863,10 @@ async function assertTraceArtifacts({
     optimizedSpacePlaceholder
   );
   assert(JSON.stringify(bodySearch).includes(rawToken), "monitor_search_bodies should find raw request body token", bodySearch);
+  assert(JSON.stringify(responseBody).includes("RAW_REAL_RESPONSE_BODY_TOKEN"), "browser_wait_for_response_body should return parsed body", responseBody);
+  await stat(downloadResult.outputPath);
+  assert(JSON.stringify(downloadsInspection).includes(downloadResult.downloadId), "browser_get_downloads should include saved download", downloadsInspection);
+  assert(JSON.stringify(geolocationStatus).includes("geo:22.319,114.169"), "browser_set_geolocation and browser_grant_permissions should allow geolocation reads", geolocationStatus);
   assert(delayedResponse.status === 200, "browser_wait_for_response should return delayed response", delayedResponse);
   assert(JSON.stringify(accessibilityInspection).includes("heading"), "browser_get_accessibility should include heading role", accessibilityInspection);
   assert(JSON.stringify(evalInspection).includes("real-run-delayed-response"), "browser_eval should return page state", evalInspection);
@@ -705,6 +912,9 @@ async function assertTraceArtifacts({
       stateTitle: state.title,
       domExternalized: Boolean(domInspection.html?.ref),
       elements: elementsInspection.elements?.length,
+      forms: formsInspection.forms?.length,
+      downloadedPath: downloadResult.outputPath,
+      responseBodyStatus: responseBody.status,
       optimizedSelector: optimizedDuplicateSelector.recommended?.selector,
       screenshotPath: screenshot.outputPath,
       accessibilityElements: accessibilityInspection.elements?.length,
@@ -733,6 +943,13 @@ async function assertTraceArtifacts({
     credentialStateTools: true,
     tabTools: true,
     networkInspection: true,
+    artifactRead: true,
+    responseBodyRead: true,
+    fileUpload: true,
+    downloads: true,
+    viewport: true,
+    permissionsAndGeolocation: true,
+    forms: true,
     readLimitError: true
   };
 }
@@ -777,6 +994,19 @@ function parseToolResponse(name, result) {
     throw new Error(`${name} did not return text content: ${JSON.stringify(result)}`);
   }
   return JSON.parse(text);
+}
+
+function assertAllPublicToolsCalled(report) {
+  const called = new Set(report.calledTools.map((name) => String(name).replace(/\(expected-error\)$/, "")));
+  const missing = publicTools.filter((name) => !called.has(name));
+  assert(missing.length === 0, `All public MCP tools should be called at least once. Missing: ${missing.join(", ")}`, {
+    missing,
+    called: [...called].sort()
+  });
+  report.assertions.allPublicToolsCalled = {
+    count: publicTools.length,
+    tools: publicTools
+  };
 }
 
 async function startHttpCliServer() {
@@ -869,6 +1099,19 @@ async function startDemoApp() {
       }, 40);
       return;
     }
+    if (req.url === "/api/response-body") {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: true, marker: "real-run-response-body", token: "RAW_REAL_RESPONSE_BODY_TOKEN" }));
+      return;
+    }
+    if (req.url === "/download/report.txt") {
+      res.writeHead(200, {
+        "content-type": "text/plain",
+        "content-disposition": "attachment; filename=\"rawtrace-real-report.txt\""
+      });
+      res.end("rawtrace real-run download payload");
+      return;
+    }
     if (req.url === "/api/search" && req.method === "POST") {
       const chunks = [];
       req.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
@@ -939,10 +1182,27 @@ function indexHtml() {
     <option value="alpha">Alpha</option>
     <option value="beta">Beta</option>
   </select>
+  <form id="profile-form" aria-label="Profile Form">
+    <label for="profile-name">Profile Name</label>
+    <input id="profile-name" name="profileName" value="">
+    <label for="profile-notes">Profile Notes</label>
+    <textarea id="profile-notes" name="profileNotes"></textarea>
+    <label for="profile-tier">Profile Tier</label>
+    <select id="profile-tier" name="profileTier">
+      <option value="free">Free</option>
+      <option value="pro">Pro</option>
+    </select>
+    <label><input id="profile-enabled" name="profileEnabled" type="checkbox"> Enabled</label>
+    <input id="upload-file" name="uploadFile" type="file">
+    <button id="profile-submit" type="submit">Save Profile</button>
+  </form>
   <label><input id="agree" type="checkbox"> Agree</label>
   <button id="submit" type="button">Submit</button>
   <button id="dialog-button" type="button">Dialog</button>
   <button id="delayed-button" type="button">Delayed API</button>
+  <button id="response-body-button" type="button">Response Body API</button>
+  <button id="geolocation-button" type="button">Read Location</button>
+  <a id="download-link" href="/download/report.txt" download>Download Report</a>
   <a id="second-link" href="/second">Second</a>
   <a id="popup-link" href="/second" target="_blank">Popup</a>
   <div id="hover-target" role="button" tabindex="0">Hover Target</div>
@@ -989,6 +1249,31 @@ function indexHtml() {
       const response = await fetch("/api/delayed");
       const data = await response.json();
       status.textContent = data.marker;
+    });
+    document.querySelector("#response-body-button").addEventListener("click", async () => {
+      const response = await fetch("/api/response-body");
+      const data = await response.json();
+      status.textContent = data.marker;
+    });
+    document.querySelector("#geolocation-button").addEventListener("click", () => {
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          status.textContent = "geo:" + position.coords.latitude.toFixed(3) + "," + position.coords.longitude.toFixed(3);
+        },
+        (error) => {
+          status.textContent = "geo-error:" + error.code;
+        }
+      );
+    });
+    document.querySelector("#profile-form").addEventListener("submit", (event) => {
+      event.preventDefault();
+      status.textContent =
+        "profile:" +
+        document.querySelector("#profile-name").value +
+        ":" +
+        document.querySelector("#profile-tier").value +
+        ":" +
+        document.querySelector("#profile-enabled").checked;
     });
     button.addEventListener("click", async () => {
       console.log("rawtrace-console-log-12345");

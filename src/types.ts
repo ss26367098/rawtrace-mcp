@@ -57,6 +57,18 @@ export interface CredentialAccessAcknowledgementInput extends RawCaptureAcknowle
   acknowledgeCredentialAccess?: boolean;
 }
 
+export interface FileAccessAcknowledgementInput {
+  acknowledgeFileAccess?: boolean;
+}
+
+export interface PermissionChangeAcknowledgementInput {
+  acknowledgePermissionChange?: boolean;
+}
+
+export interface LocationAccessAcknowledgementInput {
+  acknowledgeLocationAccess?: boolean;
+}
+
 export interface TraceEvent {
   sessionId: string;
   seq: number;
@@ -86,6 +98,19 @@ export interface ReadEventsInput {
   stream: EventStream | "all";
   offset?: number;
   limit?: number;
+}
+
+export interface MonitorGetManifestInput {
+  sessionId?: string;
+}
+
+export interface MonitorReadArtifactInput extends RawCaptureAcknowledgementInput {
+  sessionId?: string;
+  path?: string;
+  ref?: BodyRef;
+  maxBytes?: number;
+  asText?: boolean;
+  parseJson?: boolean;
 }
 
 export interface SearchEventsInput {
@@ -175,6 +200,44 @@ export interface BrowserWaitForResponseInput {
   timeoutMs?: number;
 }
 
+export interface BrowserWaitForResponseBodyInput extends RawCaptureAcknowledgementInput, BrowserWaitForResponseInput {
+  maxBytes?: number;
+  parseJson?: boolean;
+}
+
+export interface BrowserUploadFileInput extends FileAccessAcknowledgementInput {
+  selector: string;
+  paths: string[];
+  timeoutMs?: number;
+}
+
+export interface BrowserWaitForDownloadInput extends RawCaptureAcknowledgementInput {
+  triggerSelector?: string;
+  timeoutMs?: number;
+  outputDir?: string;
+  suggestedFilename?: string;
+}
+
+export interface BrowserGetDownloadsInput {
+  limit?: number;
+}
+
+export interface BrowserSetViewportInput {
+  width: number;
+  height: number;
+}
+
+export interface BrowserGrantPermissionsInput extends PermissionChangeAcknowledgementInput {
+  permissions: string[];
+  origin?: string;
+}
+
+export interface BrowserSetGeolocationInput extends LocationAccessAcknowledgementInput {
+  latitude: number;
+  longitude: number;
+  accuracy?: number;
+}
+
 export interface BrowserHandleDialogInput {
   action: "accept" | "dismiss";
   promptText?: string;
@@ -194,6 +257,30 @@ export interface BrowserGetAccessibilityInput extends RawCaptureAcknowledgementI
   selector?: string;
   textContains?: string;
   limit?: number;
+}
+
+export interface BrowserGetFormsInput extends RawCaptureAcknowledgementInput {
+  selector?: string;
+  textContains?: string;
+  limit?: number;
+  maxBytes?: number;
+}
+
+export type BrowserFillFormValue = string | number | boolean | string[] | null;
+
+export interface BrowserFillFormFieldInput {
+  selector?: string;
+  name?: string;
+  label?: string;
+  placeholder?: string;
+  value?: BrowserFillFormValue;
+  checked?: boolean;
+}
+
+export interface BrowserFillFormInput {
+  fields: BrowserFillFormFieldInput[];
+  submitSelector?: string;
+  timeoutMs?: number;
 }
 
 export interface BrowserEvalInput extends DangerousEvalAcknowledgementInput {

@@ -37,9 +37,18 @@ describe("runtime safety", () => {
     await expect(runtime.browserGetCookies({})).rejects.toMatchObject({
       code: "RAW_CAPTURE_ACK_REQUIRED"
     } satisfies Partial<RawTraceError>);
+    await expect(runtime.monitorReadArtifact({ path: "bodies/test.txt" })).rejects.toMatchObject({
+      code: "RAW_CAPTURE_ACK_REQUIRED"
+    } satisfies Partial<RawTraceError>);
+    await expect(runtime.browserWaitForResponseBody({ urlContains: "/api" })).rejects.toMatchObject({
+      code: "RAW_CAPTURE_ACK_REQUIRED"
+    } satisfies Partial<RawTraceError>);
+    await expect(runtime.browserGetForms({})).rejects.toMatchObject({
+      code: "RAW_CAPTURE_ACK_REQUIRED"
+    } satisfies Partial<RawTraceError>);
   });
 
-  it("requires explicit dangerous eval and credential access acknowledgements", async () => {
+  it("requires explicit dangerous eval, credential, file, permission, and location acknowledgements", async () => {
     const runtime = new RawTraceRuntime();
 
     await expect(runtime.browserEval({ acknowledgeRawCapture: true, expression: "1 + 1" })).rejects.toMatchObject({
@@ -47,6 +56,15 @@ describe("runtime safety", () => {
     } satisfies Partial<RawTraceError>);
     await expect(runtime.browserGetCookies({ acknowledgeRawCapture: true })).rejects.toMatchObject({
       code: "CREDENTIAL_ACCESS_ACK_REQUIRED"
+    } satisfies Partial<RawTraceError>);
+    await expect(runtime.browserUploadFile({ selector: "#file", paths: ["demo.txt"] })).rejects.toMatchObject({
+      code: "FILE_ACCESS_ACK_REQUIRED"
+    } satisfies Partial<RawTraceError>);
+    await expect(runtime.browserGrantPermissions({ permissions: ["geolocation"] })).rejects.toMatchObject({
+      code: "PERMISSION_CHANGE_ACK_REQUIRED"
+    } satisfies Partial<RawTraceError>);
+    await expect(runtime.browserSetGeolocation({ latitude: 1, longitude: 2 })).rejects.toMatchObject({
+      code: "LOCATION_ACCESS_ACK_REQUIRED"
     } satisfies Partial<RawTraceError>);
     await expect(runtime.browserLaunch({ headless: true, storageStatePath: "state.json" })).rejects.toMatchObject({
       code: "RAW_CAPTURE_ACK_REQUIRED"

@@ -13,8 +13,12 @@ describe("MCP transports", () => {
     });
     const client = new Client({ name: "rawtrace-test-client", version: "0.0.0" });
     await client.connect(transport);
+    const tools = await client.listTools();
     const result = await client.callTool({ name: "monitor_start", arguments: {} });
     await client.close();
+    expect(tools.tools).toHaveLength(54);
+    expect(tools.tools.map((tool) => tool.name)).toContain("monitor_read_artifact");
+    expect(tools.tools.map((tool) => tool.name)).toContain("browser_fill_form");
     expect(JSON.stringify(result)).toContain("RAW_CAPTURE_ACK_REQUIRED");
   });
 
@@ -23,10 +27,14 @@ describe("MCP transports", () => {
     const http = await startHttpMcpServer(server, { host: "127.0.0.1", port: 0 });
     const client = new Client({ name: "rawtrace-http-test-client", version: "0.0.0" });
     await client.connect(new StreamableHTTPClientTransport(new URL(http.url)));
+    const tools = await client.listTools();
     const result = await client.callTool({ name: "monitor_start", arguments: {} });
     await client.close();
     await http.close();
     await server.close();
+    expect(tools.tools).toHaveLength(54);
+    expect(tools.tools.map((tool) => tool.name)).toContain("browser_wait_for_response_body");
+    expect(tools.tools.map((tool) => tool.name)).toContain("browser_wait_for_download");
     expect(JSON.stringify(result)).toContain("RAW_CAPTURE_ACK_REQUIRED");
   });
 });

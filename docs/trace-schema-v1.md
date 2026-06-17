@@ -102,7 +102,7 @@ If `maxBodyBytes` prevents a request or response body from being captured, RawTr
 
 ## Inspection Artifacts
 
-Current-page inspection tools such as `browser_get_dom`, `browser_screenshot`, `browser_eval`, and storageState export may also write raw artifacts to `bodies/` when a monitor is running. They use the same reference shape as `bodyRef`, for example:
+Current-page inspection and raw body tools such as `browser_get_dom`, `browser_screenshot`, `browser_eval`, `browser_wait_for_response_body`, downloads, and storageState export may also write raw artifacts to `bodies/` when a monitor is running. They use the same reference shape as `bodyRef`, for example:
 
 ```json
 {
@@ -117,4 +117,6 @@ Current-page inspection tools such as `browser_get_dom`, `browser_screenshot`, `
 
 When no monitor is running, inspection artifacts are stored under `rawtrace-traces/inspections/` and are not part of a trace schema bundle.
 
-Inspection, eval, tab, dialog, credential, and browser action tools only write compact `actions` metadata while monitoring is active, such as tool start/end/error, selector, pageId, byte length, and artifact references. They do not put full page HTML/text, screenshot bytes, large eval results, or full storageState JSON into `actions.ndjson`.
+`monitor_read_artifact` reads only files inside a trace session directory. It does not add new event stream fields; it exposes already-written `bodyRef`, `htmlRef`, `textRef`, snapshot, or artifact content through MCP.
+
+Inspection, eval, tab, dialog, credential, file, permission, geolocation, form, and browser action tools only write compact `actions` metadata while monitoring is active, such as tool start/end/error, selector, pageId, byte length, and artifact references. They do not put full page HTML/text, screenshot bytes, large eval results, full response bodies, local file contents, or full storageState JSON into `actions.ndjson`.

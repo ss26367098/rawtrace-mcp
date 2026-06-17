@@ -1,22 +1,29 @@
 import { createHash, randomBytes } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, relative, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { chromium } from "playwright";
-import type { Browser, BrowserContext, Cookie, Dialog, ElementHandle, Frame, Page } from "playwright";
+import type { Browser, BrowserContext, Cookie, Dialog, ElementHandle, Frame, Locator, Page } from "playwright";
 import {
   CREDENTIAL_ACCESS_WARNING,
   DANGEROUS_EVAL_WARNING,
   DEFAULT_ACCESSIBILITY_LIMIT,
+  DEFAULT_GET_DOWNLOADS_LIMIT,
   DEFAULT_GET_ELEMENTS_LIMIT,
+  DEFAULT_GET_FORMS_LIMIT,
   DEFAULT_GET_NETWORK_LIMIT,
   DEFAULT_INSPECTION_MAX_BYTES,
   DEFAULT_MAX_BODY_BYTES,
   DEFAULT_READ_EVENTS_LIMIT,
+  FILE_ACCESS_WARNING,
+  LOCATION_ACCESS_WARNING,
   MAX_ACCESSIBILITY_LIMIT,
+  MAX_GET_DOWNLOADS_LIMIT,
   MAX_GET_ELEMENTS_LIMIT,
+  MAX_GET_FORMS_LIMIT,
   MAX_GET_NETWORK_LIMIT,
+  PERMISSION_CHANGE_WARNING,
   RAW_CAPTURE_WARNING,
   STORAGE_STATE_OVERWRITE_WARNING
 } from "../constants.js";
@@ -36,13 +43,17 @@ import type {
   BrowserClearCookiesInput,
   BrowserEvalInput,
   BrowserExportStorageStateInput,
+  BrowserFillFormInput,
   BrowserGetDomInput,
   BrowserGetElementsInput,
+  BrowserGetDownloadsInput,
+  BrowserGetFormsInput,
   BrowserGetAccessibilityInput,
   BrowserGetCookiesInput,
   BrowserGetNetworkInput,
   BrowserGetStateInput,
   BrowserGetStorageInput,
+  BrowserGrantPermissionsInput,
   BrowserHandleDialogInput,
   BrowserHoverInput,
   BrowserImportStorageStateInput,
@@ -52,11 +63,18 @@ import type {
   BrowserScrollInput,
   BrowserSelectOptionInput,
   BrowserSetCookiesInput,
+  BrowserSetGeolocationInput,
   BrowserSetStorageInput,
+  BrowserSetViewportInput,
   BrowserScreenshotInput,
+  BrowserUploadFileInput,
   BrowserWaitForResponseInput,
+  BrowserWaitForResponseBodyInput,
+  BrowserWaitForDownloadInput,
   CaptureOptions,
   EventStream,
+  MonitorGetManifestInput,
+  MonitorReadArtifactInput,
   MonitorStartInput,
   ReadEventsInput,
   Recorder,
@@ -142,6 +160,17 @@ interface RejectedSelectorCandidate {
   error?: string;
 }
 
+interface DownloadRecord {
+  downloadId: string;
+  pageId?: string;
+  url: string;
+  suggestedFilename: string;
+  outputPath: string;
+  byteLength: number;
+  sha256: string;
+  createdAt: string;
+}
+
 const DEFAULT_OPTIMIZE_SELECTOR_LIMIT = 20;
 const MAX_OPTIMIZE_SELECTOR_LIMIT = 100;
 
@@ -157,6 +186,8 @@ export class RawTraceRuntime {
   private readonly pageIds = new Map<Page, string>();
   private nextPageNumber = 0;
   private dialogHandler?: (dialog: Dialog) => void;
+  private readonly downloads: DownloadRecord[] = [];
+  private nextDownloadNumber = 0;
 
   async browserLaunch(input: BrowserLaunchInput = {}): Promise<Record<string, unknown>> {
     await this.browserClose().catch(() => undefined);
@@ -473,6 +504,22 @@ export class RawTraceRuntime {
     };
   }
 
+  async monitorListSessions(): Promise<Record<string, unknown>> {
+    const sessions = [...this.sessions.values()].map((session) => session.manifest());
+    const latest = sessions.at(-1);
+    return {
+      activeSessionId: this.activeMonitor?.trace.sessionId,
+      latestSessionId: latest?.sessionId,
+      count: sessions.length,
+      sessions
+    };
+  }
+
+  async monitorGetManifest(input: MonitorGetManifestInput = {}): Promise<Record<string, unknown>> {
+    const session = this.resolveSession(input.sessionId);
+    return session.manifest() as unknown as Record<string, unknown>;
+  }
+
   async monitorGetSummary(input: { sessionId?: string } = {}): Promise<TraceSummary> {
     return summarizeTrace(this.resolveSession(input.sessionId));
   }
@@ -512,6 +559,23 @@ export class RawTraceRuntime {
       matches: result.matches,
       totalScanned: result.totalScanned,
       hasMore: result.hasMore
+    };
+  }
+
+  async monitorReadArtifact(input: MonitorReadArtifactInput): Promise<Record<string, unknown>> {
+    assertRawCaptureAcknowledged(input, "monitor_read_artifact");
+    const session = this.resolveSession(input.sessionId);
+    const result = await session.readArtifact({
+      path: input.path,
+      ref: input.ref,
+      maxBytes: input.maxBytes,
+      asText: input.asText,
+      parseJson: input.parseJson
+    });
+    return {
+      sessionId: session.sessionId,
+      ...result,
+      warning: RAW_CAPTURE_WARNING
     };
   }
 
@@ -1345,6 +1409,343 @@ export class RawTraceRuntime {
     }
   }
 
+  async browserWaitForResponseBody(input: BrowserWaitForResponseBodyInput): Promise<Record<string, unknown>> {
+    assertRawCaptureAcknowledged(input, "browser_wait_for_response_body");
+    const page = this.requirePage();
+    const timeoutMs = input.timeoutMs ?? 5000;
+    const expectedMethod = input.method?.toUpperCase();
+    const urlRegex = input.urlRegex ? compileRegex(input.urlRegex, "browser_wait_for_response_body") : undefined;
+    const maxBytes = normalizeMaxBytes(input.maxBytes);
+    if (!input.urlContains && !urlRegex && !expectedMethod && input.status === undefined) {
+      throw new RawTraceError("WAIT_RESPONSE_FILTER_REQUIRED", "browser_wait_for_response_body requires at least one filter.");
+    }
+    const action = await this.startAction("wait_for_response_body", {
+      urlContains: input.urlContains,
+      urlRegex: input.urlRegex,
+      method: expectedMethod,
+      status: input.status,
+      maxBytes,
+      parseJson: input.parseJson ?? false
+    });
+    try {
+      const response = await page.waitForResponse(
+        (candidate) => {
+          const request = candidate.request();
+          const url = candidate.url();
+          if (input.urlContains && !url.includes(input.urlContains)) {
+            return false;
+          }
+          if (urlRegex && !urlRegex.test(url)) {
+            return false;
+          }
+          if (expectedMethod && request.method().toUpperCase() !== expectedMethod) {
+            return false;
+          }
+          if (input.status !== undefined && candidate.status() !== input.status) {
+            return false;
+          }
+          return true;
+        },
+        { timeout: timeoutMs }
+      );
+      const headers = response.headers();
+      const contentLength = parseContentLength(headers["content-length"]);
+      const body =
+        contentLength !== undefined && contentLength > maxBytes
+          ? skippedResponseBody(contentLength, maxBytes, headers["content-type"], "contentLength_exceeds_maxBytes")
+          : await this.materializeResponseBody("response_body", await response.body(), maxBytes, input.parseJson ?? false, headers["content-type"]);
+      const result = {
+        url: response.url(),
+        status: response.status(),
+        statusText: response.statusText(),
+        method: response.request().method(),
+        pageUrl: page.url(),
+        headers,
+        body
+      };
+      await this.finishAction(action, {
+        url: response.url(),
+        status: response.status(),
+        method: response.request().method(),
+        bodyByteLength: body.byteLength,
+        bodyRef: body.ref
+      });
+      return result;
+    } catch (error) {
+      await this.failAction(action, error);
+      throw error;
+    }
+  }
+
+  async browserUploadFile(input: BrowserUploadFileInput): Promise<Record<string, unknown>> {
+    assertFileAccessAcknowledged(input, "browser_upload_file");
+    const page = this.requirePage();
+    const absolutePaths = input.paths.map((filePath) => resolve(filePath));
+    const action = await this.startAction("upload_file", {
+      selector: input.selector,
+      fileCount: absolutePaths.length,
+      fileNames: absolutePaths.map((filePath) => basename(filePath))
+    });
+    try {
+      await page.locator(input.selector).first().setInputFiles(absolutePaths, { timeout: input.timeoutMs ?? 5000 });
+      await this.finishAction(action, { urlAfter: page.url(), fileCount: absolutePaths.length });
+      await this.activeMonitor?.cookies?.diff("after_upload_file");
+      return {
+        uploaded: true,
+        selector: input.selector,
+        fileCount: absolutePaths.length,
+        paths: absolutePaths,
+        warning: FILE_ACCESS_WARNING
+      };
+    } catch (error) {
+      await this.failAction(action, error);
+      throw error;
+    }
+  }
+
+  async browserWaitForDownload(input: BrowserWaitForDownloadInput = {}): Promise<Record<string, unknown>> {
+    assertRawCaptureAcknowledged(input, "browser_wait_for_download");
+    const page = this.requirePage();
+    const downloadId = `download_${String(++this.nextDownloadNumber).padStart(6, "0")}`;
+    const action = await this.startAction("wait_for_download", {
+      triggerSelector: input.triggerSelector,
+      outputDir: input.outputDir,
+      suggestedFilename: input.suggestedFilename
+    });
+    try {
+      const downloadPromise = page.waitForEvent("download", { timeout: input.timeoutMs ?? 30_000 });
+      if (input.triggerSelector) {
+        await page.locator(input.triggerSelector).first().click({ timeout: input.timeoutMs ?? 5000 });
+      }
+      const download = await downloadPromise;
+      const outputDir = resolve(input.outputDir ?? join("rawtrace-traces", "downloads", makeInspectionId()));
+      await mkdir(outputDir, { recursive: true });
+      const safeFilename = sanitizeDownloadFilename(input.suggestedFilename ?? download.suggestedFilename() ?? "download.bin");
+      const outputPath = join(outputDir, `${downloadId}_${safeFilename}`);
+      await download.saveAs(outputPath);
+      const bytes = await readFile(outputPath);
+      const record: DownloadRecord = {
+        downloadId,
+        pageId: this.pageIdFor(page),
+        url: download.url(),
+        suggestedFilename: download.suggestedFilename(),
+        outputPath,
+        byteLength: bytes.byteLength,
+        sha256: sha256(bytes),
+        createdAt: new Date().toISOString()
+      };
+      this.downloads.push(record);
+      await this.finishAction(action, {
+        downloadId,
+        url: record.url,
+        outputPath,
+        byteLength: record.byteLength,
+        sha256: record.sha256
+      });
+      return {
+        ...record,
+        warning: RAW_CAPTURE_WARNING
+      };
+    } catch (error) {
+      await this.failAction(action, error);
+      throw error;
+    }
+  }
+
+  async browserGetDownloads(input: BrowserGetDownloadsInput = {}): Promise<Record<string, unknown>> {
+    const limit = normalizeBoundedLimit(input.limit, DEFAULT_GET_DOWNLOADS_LIMIT, MAX_GET_DOWNLOADS_LIMIT, "browser_get_downloads");
+    const downloads = this.downloads.slice(-limit);
+    return {
+      count: this.downloads.length,
+      limit,
+      downloads
+    };
+  }
+
+  async browserSetViewport(input: BrowserSetViewportInput): Promise<Record<string, unknown>> {
+    const page = this.requirePage();
+    const action = await this.startAction("set_viewport", { width: input.width, height: input.height });
+    try {
+      await page.setViewportSize({ width: input.width, height: input.height });
+      const viewport = page.viewportSize();
+      await this.finishAction(action, { viewport, urlAfter: page.url() });
+      return {
+        pageId: this.pageIdFor(page),
+        viewport
+      };
+    } catch (error) {
+      await this.failAction(action, error);
+      throw error;
+    }
+  }
+
+  async browserGrantPermissions(input: BrowserGrantPermissionsInput): Promise<Record<string, unknown>> {
+    assertPermissionChangeAcknowledged(input, "browser_grant_permissions");
+    const context = this.requireContext();
+    const action = await this.startAction("grant_permissions", {
+      permissions: input.permissions,
+      origin: input.origin
+    });
+    try {
+      await context.grantPermissions(input.permissions as Parameters<BrowserContext["grantPermissions"]>[0], input.origin ? { origin: input.origin } : undefined);
+      await this.finishAction(action, { granted: true, permissionCount: input.permissions.length });
+      return {
+        granted: true,
+        permissions: input.permissions,
+        origin: input.origin,
+        warning: PERMISSION_CHANGE_WARNING
+      };
+    } catch (error) {
+      await this.failAction(action, error);
+      throw error;
+    }
+  }
+
+  async browserSetGeolocation(input: BrowserSetGeolocationInput): Promise<Record<string, unknown>> {
+    assertLocationAccessAcknowledged(input, "browser_set_geolocation");
+    const context = this.requireContext();
+    const action = await this.startAction("set_geolocation", {
+      latitude: input.latitude,
+      longitude: input.longitude,
+      accuracy: input.accuracy
+    });
+    try {
+      const geolocation = {
+        latitude: input.latitude,
+        longitude: input.longitude,
+        accuracy: input.accuracy
+      };
+      await context.setGeolocation(geolocation);
+      await this.finishAction(action, { geolocation });
+      return {
+        geolocation,
+        warning: LOCATION_ACCESS_WARNING
+      };
+    } catch (error) {
+      await this.failAction(action, error);
+      throw error;
+    }
+  }
+
+  async browserGetForms(input: BrowserGetFormsInput = {}): Promise<Record<string, unknown>> {
+    assertRawCaptureAcknowledged(input, "browser_get_forms");
+    const page = this.requirePage();
+    const limit = normalizeBoundedLimit(input.limit, DEFAULT_GET_FORMS_LIMIT, MAX_GET_FORMS_LIMIT, "browser_get_forms");
+    const maxBytes = normalizeMaxBytes(input.maxBytes);
+    const action = await this.startAction("inspect.get_forms", {
+      selector: input.selector,
+      textContains: input.textContains,
+      limit,
+      maxBytes
+    });
+    try {
+      const [title, scan] = await Promise.all([
+        page.title(),
+        page.evaluate(summarizeForms, {
+          selector: input.selector,
+          textContains: input.textContains,
+          limit
+        })
+      ]);
+      const materialized = await this.materializeJsonValue("forms", scan, maxBytes);
+      const result = {
+        url: page.url(),
+        title,
+        selector: input.selector,
+        textContains: input.textContains,
+        limit,
+        maxBytes,
+        totalForms: scan.totalForms,
+        totalControls: scan.totalControls,
+        ...(materialized.value ? (materialized.value as Record<string, unknown>) : { formsRef: materialized.ref, outputPath: materialized.outputPath, outputDir: materialized.outputDir }),
+        byteLength: materialized.byteLength,
+        sha256: materialized.sha256,
+        warning: RAW_CAPTURE_WARNING
+      };
+      await this.finishAction(action, {
+        urlAfter: page.url(),
+        totalForms: scan.totalForms,
+        totalControls: scan.totalControls,
+        returnedForms: scan.forms.length,
+        byteLength: materialized.byteLength,
+        formsRef: materialized.ref
+      });
+      return result;
+    } catch (error) {
+      await this.failAction(action, error);
+      throw error;
+    }
+  }
+
+  async browserFillForm(input: BrowserFillFormInput): Promise<Record<string, unknown>> {
+    const page = this.requirePage();
+    const timeoutMs = input.timeoutMs ?? 5000;
+    const action = await this.startAction("fill_form", {
+      fieldCount: input.fields.length,
+      submitSelector: input.submitSelector,
+      fieldTargets: input.fields.map((field) => ({
+        selector: field.selector,
+        name: field.name,
+        label: field.label,
+        placeholder: field.placeholder,
+        valueLength: valueLength(field.value),
+        checked: field.checked
+      }))
+    });
+    try {
+      const filled: Array<Record<string, unknown>> = [];
+      for (let index = 0; index < input.fields.length; index += 1) {
+        const field = input.fields[index]!;
+        const locator = this.formFieldLocator(page, field);
+        const count = await locator.count();
+        if (count === 0) {
+          throw new RawTraceError("FORM_FIELD_NOT_FOUND", "No form control matches the requested field.", {
+            index,
+            selector: field.selector,
+            name: field.name,
+            label: field.label,
+            placeholder: field.placeholder
+          });
+        }
+        const target = locator.first();
+        const control = await target.evaluate(summarizeFormControlForFill);
+        const result = await fillFormControl(target, field, timeoutMs, control);
+        filled.push({
+          index,
+          selector: field.selector,
+          name: field.name,
+          label: field.label,
+          placeholder: field.placeholder,
+          control,
+          ...result
+        });
+      }
+
+      let submitted = false;
+      if (input.submitSelector) {
+        await page.locator(input.submitSelector).first().click({ timeout: timeoutMs });
+        submitted = true;
+      }
+
+      await this.finishAction(action, {
+        urlAfter: page.url(),
+        filledCount: filled.length,
+        submitted
+      });
+      await this.activeMonitor?.cookies?.diff("after_fill_form");
+      return {
+        filledCount: filled.length,
+        submitted,
+        submitSelector: input.submitSelector,
+        fields: filled,
+        url: page.url()
+      };
+    } catch (error) {
+      await this.failAction(action, error);
+      throw error;
+    }
+  }
+
   async browserHandleDialog(input: BrowserHandleDialogInput): Promise<Record<string, unknown>> {
     const context = this.requireContext();
     const once = input.once ?? true;
@@ -1551,6 +1952,78 @@ export class RawTraceRuntime {
       });
     }
     return frame;
+  }
+
+  private formFieldLocator(page: Page, field: BrowserFillFormInput["fields"][number]): Locator {
+    if (field.selector) {
+      return page.locator(field.selector);
+    }
+    if (field.label) {
+      return page.getByLabel(field.label);
+    }
+    if (field.placeholder) {
+      return page.getByPlaceholder(field.placeholder);
+    }
+    if (field.name) {
+      return page.locator(`[name="${quoteCssAttribute(field.name)}"]`);
+    }
+    throw new RawTraceError("FORM_FIELD_TARGET_REQUIRED", "Form field requires selector, name, label, or placeholder.");
+  }
+
+  private async materializeResponseBody(
+    kind: string,
+    bytes: Buffer,
+    maxBytes: number,
+    parseJson: boolean,
+    contentType?: string
+  ): Promise<Record<string, unknown> & { byteLength: number; ref?: BodyRef }> {
+    const digest = sha256(bytes);
+    const base = {
+      byteLength: bytes.byteLength,
+      sha256: digest,
+      contentType,
+      maxBytes,
+      truncated: bytes.byteLength > maxBytes
+    };
+
+    if (bytes.byteLength > maxBytes) {
+      const artifact = await this.writeInspectionArtifact(kind, bytes, "binary", extensionForContentType(contentType));
+      return {
+        ...base,
+        ref: artifact.ref,
+        outputPath: artifact.outputPath,
+        outputDir: artifact.outputDir,
+        contentSkippedReason: "byteLength_exceeds_maxBytes"
+      };
+    }
+
+    if (parseJson) {
+      try {
+        return {
+          ...base,
+          json: JSON.parse(bytes.toString("utf8")) as unknown,
+          contentEncoding: "json"
+        };
+      } catch (error) {
+        throw new RawTraceError("RESPONSE_BODY_PARSE_FAILED", "Unable to parse response body as JSON.", {
+          cause: error instanceof Error ? error.message : String(error)
+        });
+      }
+    }
+
+    if (looksTextContent(contentType)) {
+      return {
+        ...base,
+        text: bytes.toString("utf8"),
+        contentEncoding: "utf8"
+      };
+    }
+
+    return {
+      ...base,
+      base64: bytes.toString("base64"),
+      contentEncoding: "base64"
+    };
   }
 
   private async materializeJsonValue(kind: string, value: unknown, maxBytes: number): Promise<JsonInspectionValue> {
@@ -1801,6 +2274,30 @@ function assertCredentialAccessAcknowledged(input: { acknowledgeRawCapture?: boo
   if (input.acknowledgeCredentialAccess !== true) {
     throw new RawTraceError("CREDENTIAL_ACCESS_ACK_REQUIRED", `${toolName} requires acknowledgeCredentialAccess: true.`, {
       warning: CREDENTIAL_ACCESS_WARNING
+    });
+  }
+}
+
+function assertFileAccessAcknowledged(input: { acknowledgeFileAccess?: boolean }, toolName: string): void {
+  if (input.acknowledgeFileAccess !== true) {
+    throw new RawTraceError("FILE_ACCESS_ACK_REQUIRED", `${toolName} requires acknowledgeFileAccess: true.`, {
+      warning: FILE_ACCESS_WARNING
+    });
+  }
+}
+
+function assertPermissionChangeAcknowledged(input: { acknowledgePermissionChange?: boolean }, toolName: string): void {
+  if (input.acknowledgePermissionChange !== true) {
+    throw new RawTraceError("PERMISSION_CHANGE_ACK_REQUIRED", `${toolName} requires acknowledgePermissionChange: true.`, {
+      warning: PERMISSION_CHANGE_WARNING
+    });
+  }
+}
+
+function assertLocationAccessAcknowledged(input: { acknowledgeLocationAccess?: boolean }, toolName: string): void {
+  if (input.acknowledgeLocationAccess !== true) {
+    throw new RawTraceError("LOCATION_ACCESS_ACK_REQUIRED", `${toolName} requires acknowledgeLocationAccess: true.`, {
+      warning: LOCATION_ACCESS_WARNING
     });
   }
 }
@@ -2155,6 +2652,317 @@ function sanitizeFileStem(value: string): string {
 function sanitizeFileExtension(value: string): string {
   const clean = value.replace(/[^a-zA-Z0-9]+/g, "").toLowerCase();
   return clean.length > 0 ? clean : "bin";
+}
+
+function sanitizeDownloadFilename(value: string): string {
+  const clean = [...basename(value)]
+    .map((char) => (char.charCodeAt(0) < 32 || '<>:"/\\|?*'.includes(char) ? "_" : char))
+    .join("")
+    .replace(/^_+|_+$/g, "");
+  return clean.length > 0 ? clean : "download.bin";
+}
+
+function quoteCssAttribute(value: string): string {
+  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
+
+function valueLength(value: unknown): number | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (Array.isArray(value)) {
+    return value.reduce((total, item) => total + String(item).length, 0);
+  }
+  return String(value ?? "").length;
+}
+
+function looksTextContent(contentType: string | undefined): boolean {
+  const normalized = contentType?.toLowerCase() ?? "";
+  return (
+    normalized.startsWith("text/") ||
+    normalized.includes("json") ||
+    normalized.includes("javascript") ||
+    normalized.includes("xml") ||
+    normalized.includes("x-www-form-urlencoded")
+  );
+}
+
+function extensionForContentType(contentType: string | undefined): string {
+  const normalized = contentType?.toLowerCase() ?? "";
+  if (normalized.includes("json")) return "json";
+  if (normalized.includes("html")) return "html";
+  if (normalized.includes("javascript")) return "js";
+  if (normalized.includes("xml")) return "xml";
+  if (normalized.startsWith("text/")) return "txt";
+  return "bin";
+}
+
+function parseContentLength(value: string | undefined): number | undefined {
+  if (!value) {
+    return undefined;
+  }
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
+}
+
+function skippedResponseBody(
+  byteLength: number,
+  maxBytes: number,
+  contentType: string | undefined,
+  reason: string
+): Record<string, unknown> & { byteLength: number } {
+  return {
+    byteLength,
+    contentType,
+    maxBytes,
+    truncated: true,
+    contentSkippedReason: reason
+  };
+}
+
+function summarizeFormControlForFill(element: Element): Record<string, unknown> {
+  const tagName = element.tagName.toLowerCase();
+  return {
+    tagName,
+    type: element instanceof HTMLInputElement ? element.type : undefined,
+    name: element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement ? element.name || undefined : undefined,
+    id: element.id || undefined,
+    multiple: element instanceof HTMLSelectElement ? element.multiple : undefined
+  };
+}
+
+async function fillFormControl(
+  locator: Locator,
+  field: BrowserFillFormInput["fields"][number],
+  timeoutMs: number,
+  control: Record<string, unknown>
+): Promise<Record<string, unknown>> {
+  const tagName = stringValue(control.tagName);
+  const type = stringValue(control.type) ?? "";
+
+  if (tagName === "input" && type === "file") {
+    throw new RawTraceError("FORM_FILE_INPUT_UNSUPPORTED", "Use browser_upload_file for file inputs.");
+  }
+
+  if (tagName === "input" && ["checkbox", "radio"].includes(type)) {
+    const checked = field.checked ?? (typeof field.value === "boolean" ? field.value : true);
+    if (!checked && type === "radio") {
+      throw new RawTraceError("FORM_RADIO_UNCHECK_UNSUPPORTED", "Radio inputs can be checked, but not unchecked as a fill_form operation.");
+    }
+    if (checked) {
+      await locator.check({ timeout: timeoutMs });
+    } else {
+      await locator.uncheck({ timeout: timeoutMs });
+    }
+    return {
+      action: checked ? "check" : "uncheck",
+      checked
+    };
+  }
+
+  if (tagName === "select") {
+    if (field.value === undefined || field.value === null) {
+      throw new RawTraceError("FORM_FIELD_VALUE_REQUIRED", "Select fields require value.");
+    }
+    const values = Array.isArray(field.value) ? field.value : [String(field.value)];
+    const selected = await locator.selectOption(values.map((value) => ({ value })), { timeout: timeoutMs });
+    return {
+      action: "select",
+      selected,
+      valueLength: valueLength(field.value)
+    };
+  }
+
+  if (field.value === undefined) {
+    throw new RawTraceError("FORM_FIELD_VALUE_REQUIRED", "Text fields require value.");
+  }
+  const text = field.value === null ? "" : String(field.value);
+  await locator.fill(text, { timeout: timeoutMs });
+  return {
+    action: "fill",
+    valueLength: text.length
+  };
+}
+
+function summarizeForms(input: {
+  selector?: string;
+  textContains?: string;
+  limit: number;
+}): { totalForms: number; totalControls: number; forms: Array<Record<string, unknown>> } {
+  const controlSelector = "input, textarea, select, button";
+  const textNeedle = input.textContains?.toLowerCase();
+  const uniqueElements = (elements: Element[]): Element[] => [...new Set(elements)];
+  const escapeCss = (value: string): string => {
+    const css = (window as unknown as { CSS?: { escape?: (text: string) => string } }).CSS;
+    return css?.escape ? css.escape(value) : value.replace(/["\\#.:,[\]>+~*'=()]/g, "\\$&");
+  };
+  const quoteAttr = (value: string): string => value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  const compact = (value: string | null | undefined, max = 180): string | undefined => {
+    const normalized = String(value ?? "").replace(/\s+/g, " ").trim();
+    if (!normalized) return undefined;
+    return normalized.length > max ? `${normalized.slice(0, max)}...` : normalized;
+  };
+  const cssPathFor = (element: Element): string => {
+    const parts: string[] = [];
+    let current: Element | null = element;
+    while (current && parts.length < 5) {
+      let part = current.tagName.toLowerCase();
+      if (current.id) {
+        part += `#${escapeCss(current.id)}`;
+        parts.unshift(part);
+        break;
+      }
+      const parent: Element | null = current.parentElement;
+      if (parent) {
+        const siblings = Array.from(parent.children).filter((child) => child.tagName === current!.tagName);
+        if (siblings.length > 1) {
+          part += `:nth-of-type(${siblings.indexOf(current) + 1})`;
+        }
+      }
+      parts.unshift(part);
+      current = current.parentElement;
+    }
+    return parts.join(" > ");
+  };
+  const labelFor = (element: Element): string | undefined => {
+    if (element.id) {
+      const explicitLabel = document.querySelector(`label[for="${quoteAttr(element.id)}"]`);
+      const explicitText = compact(explicitLabel?.textContent);
+      if (explicitText) return explicitText;
+    }
+    const parentLabel = element.closest("label");
+    const parentText = compact(parentLabel?.textContent);
+    if (parentText) return parentText;
+    return undefined;
+  };
+  const selectorCandidatesFor = (element: Element): string[] => {
+    const tagName = element.tagName.toLowerCase();
+    const candidates: string[] = [];
+    const testAttr = ["data-testid", "data-test", "data-cy"]
+      .map((name) => ({ name, value: element.getAttribute(name) }))
+      .find((attr): attr is { name: string; value: string } => Boolean(attr.value));
+    const name = element.getAttribute("name");
+    const ariaLabel = element.getAttribute("aria-label");
+    const placeholder = element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement ? element.placeholder : "";
+    if (element.id) candidates.push(`#${escapeCss(element.id)}`);
+    if (testAttr) candidates.push(`[${testAttr.name}="${quoteAttr(testAttr.value)}"]`);
+    if (name) candidates.push(`${tagName}[name="${quoteAttr(name)}"]`);
+    if (ariaLabel) candidates.push(`[aria-label="${quoteAttr(ariaLabel)}"]`);
+    if (placeholder) candidates.push(`${tagName}[placeholder="${quoteAttr(placeholder)}"]`);
+    candidates.push(cssPathFor(element));
+    return [...new Set(candidates)].slice(0, 6);
+  };
+  const visibleFor = (element: Element): boolean => {
+    const rect = element.getBoundingClientRect();
+    const style = window.getComputedStyle(element);
+    return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none";
+  };
+  const summarizeControl = (element: Element, index: number): Record<string, unknown> => {
+    const tagName = element.tagName.toLowerCase();
+    const inputElement = element instanceof HTMLInputElement ? element : undefined;
+    const textElement = element instanceof HTMLTextAreaElement ? element : undefined;
+    const selectElement = element instanceof HTMLSelectElement ? element : undefined;
+    const buttonElement = element instanceof HTMLButtonElement ? element : undefined;
+    const rect = element.getBoundingClientRect();
+    return {
+      index,
+      tagName,
+      type: inputElement?.type ?? buttonElement?.type,
+      id: element.id || undefined,
+      name: inputElement?.name || textElement?.name || selectElement?.name || buttonElement?.name || undefined,
+      label: labelFor(element),
+      placeholder: inputElement?.placeholder || textElement?.placeholder || undefined,
+      value:
+        inputElement?.type === "file"
+          ? Array.from(inputElement.files ?? []).map((file) => file.name)
+          : (inputElement?.value ?? textElement?.value ?? selectElement?.value ?? buttonElement?.value ?? undefined),
+      checked: inputElement && ["checkbox", "radio"].includes(inputElement.type) ? inputElement.checked : undefined,
+      disabled: inputElement?.disabled ?? textElement?.disabled ?? selectElement?.disabled ?? buttonElement?.disabled ?? false,
+      multiple: selectElement?.multiple,
+      options: selectElement
+        ? Array.from(selectElement.options).map((option) => ({
+            value: option.value,
+            label: compact(option.label || option.textContent),
+            selected: option.selected
+          }))
+        : undefined,
+      visible: visibleFor(element),
+      boundingBox: {
+        x: Math.round(rect.x),
+        y: Math.round(rect.y),
+        width: Math.round(rect.width),
+        height: Math.round(rect.height)
+      },
+      selectorCandidates: selectorCandidatesFor(element)
+    };
+  };
+  const summarizeForm = (form: HTMLFormElement | undefined, controls: Element[], index: number): Record<string, unknown> => {
+    const formSummary = form
+      ? {
+          index,
+          synthetic: false,
+          id: form.id || undefined,
+          name: form.name || undefined,
+          method: form.method || undefined,
+          action: form.action || undefined,
+          selectorCandidates: selectorCandidatesFor(form)
+        }
+      : {
+          index,
+          synthetic: true
+        };
+    const controlSummaries = controls.map((control, controlIndex) => summarizeControl(control, controlIndex));
+    return {
+      ...formSummary,
+      controlCount: controlSummaries.length,
+      controls: controlSummaries
+    };
+  };
+  const matchesNeedle = (form: Record<string, unknown>): boolean => {
+    if (!textNeedle) return true;
+    return JSON.stringify(form).toLowerCase().includes(textNeedle);
+  };
+
+  const selected = input.selector ? Array.from(document.querySelectorAll(input.selector)) : Array.from(document.forms);
+  const formElements = input.selector
+    ? uniqueElements(
+        selected.flatMap((element) => [
+          ...(element instanceof HTMLFormElement ? [element] : []),
+          ...Array.from(element.querySelectorAll("form"))
+        ])
+      ).filter((element): element is HTMLFormElement => element instanceof HTMLFormElement)
+    : selected.filter((element): element is HTMLFormElement => element instanceof HTMLFormElement);
+  const selectedControls = input.selector
+    ? uniqueElements(
+        selected.flatMap((element) => [
+          ...(element.matches(controlSelector) ? [element] : []),
+          ...Array.from(element.querySelectorAll(controlSelector))
+        ])
+      )
+    : selected.filter((element) => element.matches(controlSelector));
+  const forms: Array<Record<string, unknown>> = [];
+  const seenControls = new Set<Element>();
+
+  for (const form of formElements) {
+    const controls = Array.from(form.querySelectorAll(controlSelector));
+    controls.forEach((control) => seenControls.add(control));
+    forms.push(summarizeForm(form, controls, forms.length));
+  }
+
+  const orphanControls = input.selector
+    ? selectedControls.filter((control) => !seenControls.has(control))
+    : Array.from(document.querySelectorAll(controlSelector)).filter((control) => !control.closest("form"));
+  if (orphanControls.length > 0) {
+    forms.push(summarizeForm(undefined, orphanControls, forms.length));
+  }
+
+  const filtered = forms.filter(matchesNeedle);
+  const totalControls = filtered.reduce((total, form) => total + Number(form.controlCount ?? 0), 0);
+  return {
+    totalForms: filtered.length,
+    totalControls,
+    forms: filtered.slice(0, input.limit)
+  };
 }
 
 function summarizeActiveElement(): Record<string, unknown> | null {

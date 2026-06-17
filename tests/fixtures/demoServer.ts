@@ -28,6 +28,31 @@ export async function startDemoServer(): Promise<DemoServer> {
       return;
     }
 
+    if (req.url === "/api/response-body") {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: true, marker: "response-body-marker", token: "RAW_RESPONSE_BODY_TOKEN" }));
+      return;
+    }
+
+    if (req.url === "/api/large-response") {
+      const body = "rawtrace-large-response:".concat("x".repeat(70_000));
+      res.writeHead(200, {
+        "content-type": "text/plain",
+        "content-length": Buffer.byteLength(body, "utf8")
+      });
+      res.end(body);
+      return;
+    }
+
+    if (req.url === "/download/report.txt") {
+      res.writeHead(200, {
+        "content-type": "text/plain",
+        "content-disposition": "attachment; filename=\"rawtrace-report.txt\""
+      });
+      res.end("rawtrace download payload");
+      return;
+    }
+
     if (req.url === "/api/search" && req.method === "POST") {
       const chunks: Buffer[] = [];
       req.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
@@ -107,10 +132,30 @@ function demoHtml(): string {
     <option value="alpha">Alpha</option>
     <option value="beta">Beta</option>
   </select>
+  <section id="form-container">
+    <form id="profile-form" aria-label="Profile Form">
+      <label for="profile-name">Profile Name</label>
+      <input id="profile-name" name="profileName" value="">
+      <label for="profile-notes">Profile Notes</label>
+      <textarea id="profile-notes" name="profileNotes"></textarea>
+      <label for="profile-tier">Profile Tier</label>
+      <select id="profile-tier" name="profileTier">
+        <option value="free">Free</option>
+        <option value="pro">Pro</option>
+      </select>
+      <label><input id="profile-enabled" name="profileEnabled" type="checkbox"> Enabled</label>
+      <input id="upload-file" name="uploadFile" type="file">
+      <button id="profile-submit" type="submit">Save Profile</button>
+    </form>
+  </section>
   <label><input id="agree" type="checkbox"> Agree</label>
   <button id="submit" type="button">Submit</button>
   <button id="dialog-button" type="button">Dialog</button>
   <button id="delayed-button" type="button">Delayed API</button>
+  <button id="response-body-button" type="button">Response Body API</button>
+  <button id="large-response-button" type="button">Large Response API</button>
+  <button id="geolocation-button" type="button">Read Location</button>
+  <a id="download-link" href="/download/report.txt" download>Download Report</a>
   <button data-test="data-test-action" type="button">Data Test Action</button>
   <button id="aria-disabled-action" type="button" aria-disabled="true">Disabled Action</button>
   <a id="second-link" href="/second">Second</a>
@@ -159,6 +204,36 @@ function demoHtml(): string {
       const response = await fetch("/api/delayed");
       const data = await response.json();
       status.textContent = data.marker;
+    });
+    document.querySelector("#response-body-button").addEventListener("click", async () => {
+      const response = await fetch("/api/response-body");
+      const data = await response.json();
+      status.textContent = data.marker;
+    });
+    document.querySelector("#large-response-button").addEventListener("click", async () => {
+      const response = await fetch("/api/large-response");
+      const text = await response.text();
+      status.textContent = "large:" + text.length;
+    });
+    document.querySelector("#geolocation-button").addEventListener("click", () => {
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          status.textContent = "geo:" + position.coords.latitude.toFixed(3) + "," + position.coords.longitude.toFixed(3);
+        },
+        (error) => {
+          status.textContent = "geo-error:" + error.code;
+        }
+      );
+    });
+    document.querySelector("#profile-form").addEventListener("submit", (event) => {
+      event.preventDefault();
+      status.textContent =
+        "profile:" +
+        document.querySelector("#profile-name").value +
+        ":" +
+        document.querySelector("#profile-tier").value +
+        ":" +
+        document.querySelector("#profile-enabled").checked;
     });
     button.addEventListener("click", async () => {
       button.classList.add("loading");

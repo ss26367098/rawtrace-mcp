@@ -369,6 +369,167 @@ describe("RawTraceRuntime integration", () => {
     }
   }, 60_000);
 
+  it("supports artifact reads, response bodies, downloads, uploads, viewport, permissions, geolocation, and forms", async () => {
+    const runtime = new RawTraceRuntime();
+    const outputBase = await mkdtemp(join(tmpdir(), "rawtrace-integration-"));
+    const uploadPath = join(outputBase, "upload-token.txt");
+    tempDirs.push(outputBase);
+    await writeFile(uploadPath, "rawtrace upload payload", "utf8");
+
+    try {
+      await runtime.browserLaunch({ headless: true });
+      await runtime.browserNavigate({ url: demo.url, waitUntil: "domcontentloaded" });
+
+      const viewport = await runtime.browserSetViewport({ width: 640, height: 480 });
+      const stateAfterViewport = await runtime.browserGetState({ acknowledgeRawCapture: true });
+      const started = await runtime.monitorStart({ acknowledgeRawCapture: true, outputDir: outputBase });
+      const sessionId = String(started.sessionId);
+      const sessionsWhileRunning = await runtime.monitorListSessions();
+      const manifestWhileRunning = await runtime.monitorGetManifest({ sessionId });
+      const largeDom = await runtime.browserGetDom({
+        acknowledgeRawCapture: true,
+        mode: "html",
+        maxBytes: 10
+      });
+      const artifact = await runtime.monitorReadArtifact({
+        acknowledgeRawCapture: true,
+        sessionId,
+        ref: (largeDom.html as { ref: { path: string; byteLength: number; sha256: string; encoding: "utf8" } }).ref,
+        asText: true
+      });
+
+      const responseBodyPromise = runtime.browserWaitForResponseBody({
+        acknowledgeRawCapture: true,
+        urlContains: "/api/response-body",
+        method: "GET",
+        status: 200,
+        parseJson: true
+      });
+      await runtime.browserClick({ selector: "#response-body-button" });
+      const responseBody = await responseBodyPromise;
+      const largeResponsePromise = runtime.browserWaitForResponseBody({
+        acknowledgeRawCapture: true,
+        urlContains: "/api/large-response",
+        method: "GET",
+        status: 200,
+        maxBytes: 10
+      });
+      await runtime.browserClick({ selector: "#large-response-button" });
+      const largeResponse = await largeResponsePromise;
+
+      const formsBefore = await runtime.browserGetForms({
+        acknowledgeRawCapture: true,
+        textContains: "Profile",
+        limit: 10
+      });
+      const formsFromContainer = await runtime.browserGetForms({
+        acknowledgeRawCapture: true,
+        selector: "#form-container",
+        textContains: "Profile",
+        limit: 10
+      });
+      await runtime.browserEval({
+        acknowledgeRawCapture: true,
+        acknowledgeDangerousEval: true,
+        expression: "document.querySelector('#profile-notes').value = 'x'.repeat(70000); true"
+      });
+      const largeForms = await runtime.browserGetForms({
+        acknowledgeRawCapture: true,
+        selector: "#profile-form",
+        maxBytes: 10
+      });
+      const largeFormsArtifact = await runtime.monitorReadArtifact({
+        acknowledgeRawCapture: true,
+        sessionId,
+        ref: (largeForms as { formsRef: { path: string; byteLength: number; sha256: string; encoding: "utf8" } }).formsRef,
+        parseJson: true,
+        maxBytes: 200_000
+      });
+      const fillResult = await runtime.browserFillForm({
+        fields: [
+          { name: "profileName", value: "Ada" },
+          { label: "Profile Notes", value: "note body" },
+          { selector: "#profile-tier", value: "pro" },
+          { selector: "#profile-enabled", checked: true }
+        ],
+        submitSelector: "#profile-submit"
+      });
+      const statusDom = await runtime.browserGetDom({
+        acknowledgeRawCapture: true,
+        selector: "#status",
+        mode: "text"
+      });
+
+      const uploadResult = await runtime.browserUploadFile({
+        acknowledgeFileAccess: true,
+        selector: "#upload-file",
+        paths: [uploadPath]
+      });
+      const uploadedForms = await runtime.browserGetForms({
+        acknowledgeRawCapture: true,
+        selector: "#upload-file"
+      });
+
+      const download = await runtime.browserWaitForDownload({
+        acknowledgeRawCapture: true,
+        triggerSelector: "#download-link",
+        outputDir: join(outputBase, "downloads")
+      });
+      const downloads = await runtime.browserGetDownloads({ limit: 10 });
+
+      await runtime.browserGrantPermissions({
+        acknowledgePermissionChange: true,
+        permissions: ["geolocation"],
+        origin: demo.url
+      });
+      await runtime.browserSetGeolocation({
+        acknowledgeLocationAccess: true,
+        latitude: 22.3193,
+        longitude: 114.1694,
+        accuracy: 10
+      });
+      await runtime.browserClick({ selector: "#geolocation-button" });
+      await runtime.browserWait({ mode: "quiet", quietMs: 100, timeoutMs: 3000 });
+      const geoStatus = await runtime.browserGetDom({
+        acknowledgeRawCapture: true,
+        selector: "#status",
+        mode: "text"
+      });
+
+      await runtime.monitorStop();
+      const sessionsAfterStop = await runtime.monitorListSessions();
+
+      expect(viewport.viewport).toEqual({ width: 640, height: 480 });
+      expect(stateAfterViewport.viewport).toEqual({ width: 640, height: 480 });
+      expect(JSON.stringify(sessionsWhileRunning)).toContain(sessionId);
+      expect(manifestWhileRunning).toMatchObject({ sessionId, status: "running" });
+      expect(JSON.stringify(artifact)).toContain("RawTrace Demo");
+      expect(JSON.stringify(responseBody)).toContain("RAW_RESPONSE_BODY_TOKEN");
+      expect(largeResponse.body).toMatchObject({
+        contentSkippedReason: "contentLength_exceeds_maxBytes",
+        truncated: true
+      });
+      expect(JSON.stringify(formsBefore)).toContain("profileName");
+      expect(JSON.stringify(formsFromContainer)).toContain("profileName");
+      expect(largeForms).toMatchObject({
+        totalForms: 1,
+        totalControls: expect.any(Number),
+        formsRef: expect.any(Object)
+      });
+      expect(JSON.stringify(largeFormsArtifact)).toContain("profileNotes");
+      expect(fillResult).toMatchObject({ filledCount: 4, submitted: true });
+      expect(JSON.stringify(statusDom)).toContain("profile:Ada:pro:true");
+      expect(uploadResult).toMatchObject({ uploaded: true, fileCount: 1 });
+      expect(JSON.stringify(uploadedForms)).toContain("upload-token.txt");
+      await expect(readFile(String(download.outputPath), "utf8")).resolves.toBe("rawtrace download payload");
+      expect(JSON.stringify(downloads)).toContain(String(download.downloadId));
+      expect(JSON.stringify(geoStatus)).toContain("geo:22.319,114.169");
+      expect(JSON.stringify(sessionsAfterStop)).toContain('"status":"stopped"');
+    } finally {
+      await runtime.browserClose().catch(() => undefined);
+    }
+  }, 60_000);
+
   it("protects explicit profiles from storageState overwrite without explicit acknowledgment", async () => {
     const runtime = new RawTraceRuntime();
     const userDataDir = await mkdtemp(join(tmpdir(), "rawtrace-explicit-profile-"));
