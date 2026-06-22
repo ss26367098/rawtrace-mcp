@@ -24,6 +24,7 @@ const consoleErrorText = "rawtrace-console-error-12345";
 const typedText = "rawtrace typed text 12345";
 const publicTools = [
   "browser_launch",
+  "browser_attach_cdp",
   "browser_navigate",
   "browser_reload",
   "browser_go_back",
@@ -34,10 +35,12 @@ const publicTools = [
   "browser_switch_tab",
   "browser_close_tab",
   "browser_get_state",
+  "browser_snapshot",
   "browser_get_dom",
   "browser_get_elements",
   "browser_optimize_selector",
   "browser_screenshot",
+  "browser_screenshot_annotated",
   "browser_get_network",
   "browser_get_accessibility",
   "browser_eval",
@@ -65,6 +68,7 @@ const publicTools = [
   "browser_scroll",
   "browser_select_option",
   "browser_check",
+  "browser_observe_action_result",
   "browser_wait_for_response",
   "browser_wait_for_response_body",
   "browser_upload_file",
@@ -76,7 +80,8 @@ const publicTools = [
   "browser_get_forms",
   "browser_fill_form",
   "browser_handle_dialog",
-  "browser_wait"
+  "browser_wait",
+  "browser_poll_until"
 ];
 
 async function main() {
@@ -166,6 +171,10 @@ async function runStdioSmoke(report, demoUrl, runRoot) {
       textContains: "Submit",
       limit: 10
     });
+    const snapshot = await callOk(report, client, "browser_snapshot", {
+      acknowledgeRawCapture: true,
+      elementsLimit: 10
+    });
     const optimizedSelector = await callOk(report, client, "browser_optimize_selector", {
       acknowledgeRawCapture: true,
       selector: "#submit"
@@ -173,6 +182,11 @@ async function runStdioSmoke(report, demoUrl, runRoot) {
     const screenshot = await callOk(report, client, "browser_screenshot", {
       acknowledgeRawCapture: true,
       outputPath: join(runRoot, "stdio-screenshot.png")
+    });
+    const annotatedScreenshot = await callOk(report, client, "browser_screenshot_annotated", {
+      acknowledgeRawCapture: true,
+      selector: "#submit",
+      outputPath: join(runRoot, "stdio-screenshot-annotated.png")
     });
 
     const started = await callOk(report, client, "monitor_start", {
@@ -207,8 +221,11 @@ async function runStdioSmoke(report, demoUrl, runRoot) {
     assert(String(state.title).includes("RawTrace Real Run"), "stdio browser_get_state should return page title", state);
     assert(JSON.stringify(dom).includes("Submit"), "stdio browser_get_dom should return button text", dom);
     assert(JSON.stringify(elements).includes("#submit"), "stdio browser_get_elements should include button selector", elements);
+    assert(JSON.stringify(elements).includes("recommendedSelector"), "stdio browser_get_elements should include selector metadata", elements);
+    assert(JSON.stringify(snapshot).includes("RawTrace Real Run"), "stdio browser_snapshot should include page text", snapshot);
     assert(JSON.stringify(optimizedSelector).includes("#submit"), "stdio browser_optimize_selector should preserve stable selector", optimizedSelector);
     await stat(screenshot.outputPath);
+    await stat(annotatedScreenshot.outputPath);
     assert(JSON.stringify(bodySearch).includes(rawToken), "stdio monitor_search_bodies should find raw request token", bodySearch);
     report.assertions.stdioInspectionTools = true;
   } finally {
@@ -280,6 +297,33 @@ async function runIsolatedBrowserScenario(report, client, demoUrl, runRoot) {
     textContains: "Submit",
     limit: 10
   });
+  const snapshotInspection = await callOk(report, client, "browser_snapshot", {
+    acknowledgeRawCapture: true,
+    elementsLimit: 20
+  });
+  const largeSnapshotInspection = await callOk(report, client, "browser_snapshot", {
+    acknowledgeRawCapture: true,
+    maxTextBytes: 10,
+    elementsLimit: 5
+  });
+  const pollInitial = await callOk(report, client, "browser_poll_until", {
+    acknowledgeRawCapture: true,
+    timeoutMs: 2000,
+    intervalMs: 100,
+    conditions: [
+      { type: "text", text: "RawTrace Real Run" },
+      { type: "selector", selector: "#submit", state: "visible" }
+    ],
+    snapshot: {
+      maxTextBytes: 2000,
+      elementsLimit: 10
+    }
+  });
+  const annotatedScreenshot = await callOk(report, client, "browser_screenshot_annotated", {
+    acknowledgeRawCapture: true,
+    selector: "#submit",
+    outputPath: join(runRoot, "http-isolated-annotated.png")
+  });
   const formsInspection = await callOk(report, client, "browser_get_forms", {
     acknowledgeRawCapture: true,
     textContains: "Profile",
@@ -330,6 +374,25 @@ async function runIsolatedBrowserScenario(report, client, demoUrl, runRoot) {
     selector: "#space-placeholder",
     includeRejected: true,
     candidateLimit: 20
+  });
+  const observedAction = await callOk(report, client, "browser_observe_action_result", {
+    acknowledgeRawCapture: true,
+    action: {
+      type: "type",
+      selector: "#space-placeholder",
+      text: "observed real-run value",
+      timeoutMs: 5000
+    },
+    beforeSnapshot: {
+      elementsLimit: 10,
+      maxTextBytes: 4000
+    },
+    afterSnapshot: {
+      elementsLimit: 10,
+      maxTextBytes: 4000
+    },
+    includeScreenshot: true,
+    waitAfterMs: 100
   });
   await callOk(report, client, "browser_click", {
     selector: optimizedDuplicateSelector.recommended.selector,
@@ -644,6 +707,11 @@ async function runIsolatedBrowserScenario(report, client, demoUrl, runRoot) {
     domInspection,
     domArtifactRead,
     elementsInspection,
+    snapshotInspection,
+    largeSnapshotInspection,
+    pollInitial,
+    observedAction,
+    annotatedScreenshot,
     formsInspection,
     formFill,
     formStatus,
@@ -722,6 +790,17 @@ async function runUserDataDirScenario(report, client, demoUrl, runRoot) {
 async function runCdpScenario(report, client, demoUrl, runRoot) {
   const remote = await startRemoteDebuggingChromium(runRoot);
   try {
+    const attached = await callOk(report, client, "browser_attach_cdp", {
+      cdpUrl: remote.cdpUrl,
+      targetIndex: 0
+    });
+    await callOk(report, client, "browser_navigate", {
+      url: `${demoUrl}/second`,
+      waitUntil: "domcontentloaded"
+    });
+    const attachedTabs = await callOk(report, client, "browser_list_tabs", {});
+    await callOk(report, client, "browser_close", {});
+
     const launched = await callOk(report, client, "browser_launch", {
       cdpUrl: remote.cdpUrl
     });
@@ -733,6 +812,11 @@ async function runCdpScenario(report, client, demoUrl, runRoot) {
 
     report.assertions.browserLaunchCdp = launched.mode === "cdp";
     assert(report.assertions.browserLaunchCdp, "browser_launch should report cdp mode", launched);
+    report.assertions.browserAttachCdp = attached.mode === "cdp" && attachedTabs.pages.length >= 1;
+    assert(report.assertions.browserAttachCdp, "browser_attach_cdp should attach to remote Chromium and list tabs", {
+      attached,
+      attachedTabs
+    });
   } finally {
     await remote.close().catch(() => undefined);
   }
@@ -757,6 +841,11 @@ async function assertTraceArtifacts({
   domInspection,
   domArtifactRead,
   elementsInspection,
+  snapshotInspection,
+  largeSnapshotInspection,
+  pollInitial,
+  observedAction,
+  annotatedScreenshot,
   formsInspection,
   formFill,
   formStatus,
@@ -820,6 +909,10 @@ async function assertTraceArtifacts({
   assert(actionsText.includes("eval.end"), "Action stream should include eval events");
   assert(actionsText.includes("handle_dialog.end"), "Action stream should include dialog handler registration");
   assert(actionsText.includes("wait_for_response.end"), "Action stream should include response wait events");
+  assert(actionsText.includes("inspect.snapshot.end"), "Action stream should include snapshot inspection events");
+  assert(actionsText.includes("poll_until.end"), "Action stream should include poll events");
+  assert(actionsText.includes("observe_action_result.end"), "Action stream should include observed action events");
+  assert(actionsText.includes("inspect.screenshot_annotated.end"), "Action stream should include annotated screenshot events");
 
   const responseBodyRefs = streams.network.events
     .map((event) => event.bodyRef)
@@ -842,6 +935,18 @@ async function assertTraceArtifacts({
   assert(JSON.stringify(domInspection).includes("body") || JSON.stringify(domInspection).includes("dom_html"), "browser_get_dom should return or reference HTML", domInspection);
   assert(JSON.stringify(domArtifactRead).includes("RawTrace Real Run"), "monitor_read_artifact should read DOM artifact text", domArtifactRead);
   assert(JSON.stringify(elementsInspection).includes("#submit"), "browser_get_elements should include interactive button", elementsInspection);
+  assert(JSON.stringify(elementsInspection).includes("recommendedSelector"), "browser_get_elements should include selector recommendation metadata", elementsInspection);
+  assert(JSON.stringify(elementsInspection).includes("clickable"), "browser_get_elements should include clickability metadata", elementsInspection);
+  assert(JSON.stringify(snapshotInspection).includes("RawTrace Real Run"), "browser_snapshot should include visible page text", snapshotInspection);
+  assert(JSON.stringify(snapshotInspection).includes("formsSummary"), "browser_snapshot should include form summary", snapshotInspection);
+  assert(largeSnapshotInspection.text?.ref || largeSnapshotInspection.text?.outputPath, "browser_snapshot should externalize large text", largeSnapshotInspection);
+  assert(pollInitial.matched === true && pollInitial.sampleCount >= 1, "browser_poll_until should match page signals", pollInitial);
+  assert(JSON.stringify(observedAction.diff).includes("observed real-run value"), "browser_observe_action_result should report input value changes", observedAction);
+  assert(observedAction.screenshots?.before?.outputPath && observedAction.screenshots?.after?.outputPath, "browser_observe_action_result should capture before/after screenshots", observedAction);
+  await stat(observedAction.screenshots.before.outputPath);
+  await stat(observedAction.screenshots.after.outputPath);
+  await stat(annotatedScreenshot.outputPath);
+  assert(annotatedScreenshot.annotations?.length > 0, "browser_screenshot_annotated should return annotation metadata", annotatedScreenshot);
   assert(JSON.stringify(formsInspection).includes("profileName"), "browser_get_forms should include profile form controls", formsInspection);
   assert(formFill.filledCount === 4 && formFill.submitted === true, "browser_fill_form should fill and submit form", formFill);
   assert(JSON.stringify(formStatus).includes("profile:Real Runner:pro:true"), "browser_fill_form should update form status", formStatus);
@@ -912,11 +1017,15 @@ async function assertTraceArtifacts({
       stateTitle: state.title,
       domExternalized: Boolean(domInspection.html?.ref),
       elements: elementsInspection.elements?.length,
+      snapshotElements: snapshotInspection.elements?.length,
+      pollSamples: pollInitial.sampleCount,
+      observedAction: observedAction.diff,
       forms: formsInspection.forms?.length,
       downloadedPath: downloadResult.outputPath,
       responseBodyStatus: responseBody.status,
       optimizedSelector: optimizedDuplicateSelector.recommended?.selector,
       screenshotPath: screenshot.outputPath,
+      annotatedScreenshotPath: annotatedScreenshot.outputPath,
       accessibilityElements: accessibilityInspection.elements?.length,
       networkInspectionEvents: networkInspection.events?.length,
       storageStatePath: exportedStorageState.state?.outputPath
@@ -938,6 +1047,7 @@ async function assertTraceArtifacts({
     bodySearch: true,
     inspectionTools: true,
     selectorOptimization: true,
+    observationAggregation: true,
     expandedBrowserTools: true,
     evalTool: true,
     credentialStateTools: true,

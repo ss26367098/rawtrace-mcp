@@ -1,7 +1,9 @@
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { chromium } from "playwright";
 import { RawTraceRuntime } from "../../src/runtime/browserRuntime.js";
 import { startDemoServer, type DemoServer } from "../fixtures/demoServer.js";
 
@@ -110,6 +112,14 @@ describe("RawTraceRuntime integration", () => {
         acknowledgeRawCapture: true,
         textContains: "Submit"
       });
+      const snapshot = await runtime.browserSnapshot({
+        acknowledgeRawCapture: true,
+        elementsLimit: 10
+      });
+      const largeSnapshot = await runtime.browserSnapshot({
+        acknowledgeRawCapture: true,
+        maxTextBytes: 10
+      });
       const dataTestElements = await runtime.browserGetElements({
         acknowledgeRawCapture: true,
         textContains: "Data Test Action"
@@ -143,6 +153,10 @@ describe("RawTraceRuntime integration", () => {
         acknowledgeRawCapture: true,
         fullPage: true
       });
+      const annotatedScreenshot = await runtime.browserScreenshotAnnotated({
+        acknowledgeRawCapture: true,
+        selector: "#submit"
+      });
 
       expect(String(state.url)).toContain(demo.url);
       expect(state).toMatchObject({
@@ -151,6 +165,19 @@ describe("RawTraceRuntime integration", () => {
       });
       expect(JSON.stringify(buttonDom)).toContain("Submit");
       expect(JSON.stringify(elements)).toContain("#submit");
+      expect(elements.elements).toEqual([
+        expect.objectContaining({
+          id: "submit",
+          recommendedSelector: "#submit",
+          selectorUnique: true,
+          enabled: true,
+          clickable: true,
+          stableSelectorScore: expect.any(Number)
+        })
+      ]);
+      expect(JSON.stringify(snapshot)).toContain("RawTrace Demo");
+      expect(JSON.stringify(snapshot)).toContain("activeElement");
+      expect(String((largeSnapshot.text as { outputPath?: string }).outputPath)).toContain("rawtrace-traces");
       expect(JSON.stringify(dataTestElements)).toContain('[data-test=\\"data-test-action\\"]');
       expect(JSON.stringify(dataTestElements)).not.toContain('[data-testid=\\"data-test-action\\"]');
       expect(JSON.stringify(optimizedSubmit)).toContain("#submit");
@@ -171,6 +198,7 @@ describe("RawTraceRuntime integration", () => {
       expect(String((largeDom.html as { outputPath?: string }).outputPath)).toContain("rawtrace-traces");
       await expect(readFile(String((largeDom.html as { outputPath: string }).outputPath), "utf8")).resolves.toContain("RawTrace Demo");
       await expect(stat(String(screenshot.outputPath))).resolves.toMatchObject({ size: expect.any(Number) });
+      await expect(stat(String(annotatedScreenshot.outputPath))).resolves.toMatchObject({ size: expect.any(Number) });
 
       const start = await runtime.monitorStart({ acknowledgeRawCapture: true, outputDir: outputBase });
       await runtime.browserGetDom({
@@ -197,6 +225,56 @@ describe("RawTraceRuntime integration", () => {
       expect(JSON.stringify(actions.events)).not.toContain("<!doctype html>");
       expect(JSON.stringify(bodySearch)).toContain("/api/search");
       expect(JSON.stringify(bodySearch)).toContain("body-search-token");
+    } finally {
+      await runtime.browserClose().catch(() => undefined);
+    }
+  }, 30_000);
+
+  it("polls snapshots and observes action result diffs", async () => {
+    const runtime = new RawTraceRuntime();
+
+    try {
+      await runtime.browserLaunch({ headless: true });
+      await runtime.browserNavigate({ url: demo.url, waitUntil: "domcontentloaded" });
+
+      const textPoll = await runtime.browserPollUntil({
+        acknowledgeRawCapture: true,
+        timeoutMs: 3000,
+        intervalMs: 250,
+        conditions: [{ type: "text", text: "RawTrace Demo" }]
+      });
+      const observedType = await runtime.browserObserveActionResult({
+        acknowledgeRawCapture: true,
+        action: { type: "type", selector: "#query", text: "observed input value" },
+        beforeSnapshot: { elementsLimit: 10 },
+        afterSnapshot: { elementsLimit: 10 },
+        waitAfterMs: 100
+      });
+      const valuePoll = await runtime.browserPollUntil({
+        acknowledgeRawCapture: true,
+        timeoutMs: 3000,
+        intervalMs: 250,
+        conditions: [{ type: "elementValue", selector: "#query", contains: "observed input" }]
+      });
+      const observedEval = await runtime.browserObserveActionResult({
+        acknowledgeRawCapture: true,
+        acknowledgeDangerousEval: true,
+        action: {
+          type: "eval",
+          acknowledgeRawCapture: true,
+          acknowledgeDangerousEval: true,
+          expression: "document.querySelector('#status').textContent = 'observed eval status'; 'ok'"
+        },
+        waitAfterMs: 100
+      });
+
+      expect(textPoll).toMatchObject({ matched: true });
+      expect(JSON.stringify(textPoll.samples)).toContain("RawTrace Demo");
+      expect(valuePoll).toMatchObject({ matched: true });
+      expect(observedType.diff).toMatchObject({
+        inputValues: expect.objectContaining({ changed: true })
+      });
+      expect(JSON.stringify(observedEval.diff)).toContain("observed eval status");
     } finally {
       await runtime.browserClose().catch(() => undefined);
     }
@@ -577,6 +655,71 @@ describe("RawTraceRuntime integration", () => {
     }
   }, 30_000);
 
+  it("attaches to a CDP browser and selects a tab by URL", async () => {
+    const runtime = new RawTraceRuntime();
+    const userDataDir = await mkdtemp(join(tmpdir(), "rawtrace-cdp-profile-"));
+    const port = await getFreePort();
+    tempDirs.push(userDataDir);
+    const context = await chromium.launchPersistentContext(userDataDir, {
+      headless: true,
+      args: [`--remote-debugging-port=${port}`]
+    });
+
+    try {
+      const firstPage = context.pages()[0] ?? (await context.newPage());
+      await firstPage.goto(demo.url, { waitUntil: "domcontentloaded" });
+      const secondPage = await context.newPage();
+      await secondPage.goto(`${demo.url}/second`, { waitUntil: "domcontentloaded" });
+
+      const attached = await runtime.browserAttachCdp({
+        cdpUrl: `http://127.0.0.1:${port}`,
+        urlContains: "/second"
+      });
+
+      expect(attached).toMatchObject({
+        mode: "cdp",
+        activePage: expect.objectContaining({
+          url: `${demo.url}/second`
+        })
+      });
+      expect((attached.tabs as unknown[]).length).toBeGreaterThanOrEqual(2);
+    } finally {
+      await runtime.browserClose().catch(() => undefined);
+      await context.close().catch(() => undefined);
+    }
+  }, 30_000);
+
+  it("cleans up runtime state when CDP tab selection fails", async () => {
+    const runtime = new RawTraceRuntime();
+    const userDataDir = await mkdtemp(join(tmpdir(), "rawtrace-cdp-profile-"));
+    const port = await getFreePort();
+    tempDirs.push(userDataDir);
+    const context = await chromium.launchPersistentContext(userDataDir, {
+      headless: true,
+      args: [`--remote-debugging-port=${port}`]
+    });
+
+    try {
+      const page = context.pages()[0] ?? (await context.newPage());
+      await page.goto(demo.url, { waitUntil: "domcontentloaded" });
+
+      await expect(
+        runtime.browserAttachCdp({
+          cdpUrl: `http://127.0.0.1:${port}`,
+          urlContains: "/missing-tab"
+        })
+      ).rejects.toMatchObject({
+        code: "TARGET_INDEX_OUT_OF_RANGE"
+      });
+      await expect(runtime.browserGetState({ acknowledgeRawCapture: true })).rejects.toMatchObject({
+        code: "BROWSER_NOT_LAUNCHED"
+      });
+    } finally {
+      await runtime.browserClose().catch(() => undefined);
+      await context.close().catch(() => undefined);
+    }
+  }, 30_000);
+
   it("recovers by closing the active page when browser_eval times out", async () => {
     const runtime = new RawTraceRuntime();
 
@@ -603,3 +746,18 @@ describe("RawTraceRuntime integration", () => {
     }
   }, 30_000);
 });
+
+async function getFreePort(): Promise<number> {
+  return await new Promise((resolve, reject) => {
+    const server = createNetServer();
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      const port = typeof address === "object" && address ? address.port : 0;
+      server.close((error) => {
+        if (error) reject(error);
+        else resolve(port);
+      });
+    });
+  });
+}

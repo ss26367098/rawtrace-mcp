@@ -39,6 +39,7 @@ import type { TraceSummary } from "../trace/summary.js";
 import { TraceSession } from "../trace/session.js";
 import type {
   BodyRef,
+  BrowserAttachCdpInput,
   BrowserCheckInput,
   BrowserClearCookiesInput,
   BrowserEvalInput,
@@ -58,7 +59,9 @@ import type {
   BrowserHoverInput,
   BrowserImportStorageStateInput,
   BrowserLaunchInput,
+  BrowserObserveActionResultInput,
   BrowserOptimizeSelectorInput,
+  BrowserPollUntilInput,
   BrowserPressInput,
   BrowserScrollInput,
   BrowserSelectOptionInput,
@@ -66,6 +69,8 @@ import type {
   BrowserSetGeolocationInput,
   BrowserSetStorageInput,
   BrowserSetViewportInput,
+  BrowserSnapshotInput,
+  BrowserScreenshotAnnotatedInput,
   BrowserScreenshotInput,
   BrowserUploadFileInput,
   BrowserWaitForResponseInput,
@@ -173,6 +178,12 @@ interface DownloadRecord {
 
 const DEFAULT_OPTIMIZE_SELECTOR_LIMIT = 20;
 const MAX_OPTIMIZE_SELECTOR_LIMIT = 100;
+const DEFAULT_SNAPSHOT_TEXT_BYTES = 200_000;
+const DEFAULT_SNAPSHOT_ELEMENTS_LIMIT = 80;
+const MAX_SNAPSHOT_ELEMENTS_LIMIT = 500;
+const DEFAULT_POLL_TIMEOUT_MS = 30_000;
+const DEFAULT_POLL_INTERVAL_MS = 1000;
+const MAX_POLL_SAMPLES = 200;
 
 export class RawTraceRuntime {
   private browser?: Browser;
@@ -222,6 +233,80 @@ export class RawTraceRuntime {
     this.browserMode = "isolated";
 
     return this.browserInfo("isolated", userDataDir);
+  }
+
+  async browserAttachCdp(input: BrowserAttachCdpInput): Promise<Record<string, unknown>> {
+    await this.browserClose().catch(() => undefined);
+    try {
+      this.browser = await chromium.connectOverCDP(input.cdpUrl);
+      this.context = this.browser.contexts()[0] ?? (await this.browser.newContext());
+      this.attachContext(this.context);
+      this.browserMode = "cdp";
+
+      const pages = this.context.pages().filter((page) => !page.isClosed());
+      if (pages.length === 0) {
+        this.setActivePage(await this.context.newPage());
+      } else {
+        pages.forEach((page) => this.registerPage(page));
+        const pageInfos = await Promise.all(pages.map((page) => this.pageInfo(page)));
+        let selected: Page | undefined;
+
+        if (input.pageId) {
+          selected = pages.find((page) => this.pageIdFor(page) === input.pageId);
+          if (!selected) {
+            throw new RawTraceError("PAGE_NOT_FOUND", `Unknown pageId after CDP attach: ${input.pageId}`, {
+              pageId: input.pageId,
+              pages: pageInfos
+            });
+          }
+        } else {
+          let candidates = pages;
+          if (input.urlContains) {
+            candidates = candidates.filter((page) => page.url().includes(input.urlContains ?? ""));
+          }
+          if (input.titleContains) {
+            const titlePairs = await Promise.all(candidates.map(async (page) => ({ page, title: await page.title().catch(() => "") })));
+            candidates = titlePairs.filter((pair) => pair.title.includes(input.titleContains ?? "")).map((pair) => pair.page);
+          }
+          const targetIndex = Math.trunc(input.targetIndex ?? 0);
+          if (!Number.isFinite(targetIndex) || targetIndex < 0 || targetIndex >= candidates.length) {
+            throw new RawTraceError("TARGET_INDEX_OUT_OF_RANGE", `targetIndex ${targetIndex} is outside the ${candidates.length} matched tab(s).`, {
+              targetIndex,
+              matchedTabs: candidates.length,
+              pages: pageInfos
+            });
+          }
+          selected = candidates[targetIndex];
+          if (!selected) {
+            throw new RawTraceError("PAGE_NOT_FOUND", "Unable to select a CDP tab after filtering.", {
+              targetIndex,
+              matchedTabs: candidates.length,
+              pages: pageInfos
+            });
+          }
+        }
+
+        this.setActivePage(selected);
+        if (input.activate ?? true) {
+          await selected.bringToFront().catch(() => undefined);
+        }
+      }
+
+      const tabs = await Promise.all((this.context?.pages() ?? []).filter((page) => !page.isClosed()).map((page) => this.pageInfo(page)));
+      return {
+        ...this.browserInfo("cdp", input.cdpUrl),
+        tabs,
+        activePage: this.page ? await this.pageInfo(this.page) : undefined
+      };
+    } catch (error) {
+      await this.browser?.close().catch(() => undefined);
+      this.browser = undefined;
+      this.context = undefined;
+      this.page = undefined;
+      this.browserMode = undefined;
+      this.pageIds.clear();
+      throw error;
+    }
   }
 
   async browserNavigate(input: { url: string; waitUntil?: "load" | "domcontentloaded" | "networkidle" | "commit" }): Promise<Record<string, unknown>> {
@@ -650,6 +735,33 @@ export class RawTraceRuntime {
     }
   }
 
+  async browserSnapshot(input: BrowserSnapshotInput = {}): Promise<Record<string, unknown>> {
+    assertRawCaptureAcknowledged(input, "browser_snapshot");
+    const action = await this.startAction("inspect.snapshot", {
+      selector: input.selector,
+      maxTextBytes: input.maxTextBytes,
+      elementsLimit: input.elementsLimit,
+      includeInputs: input.includeInputs ?? true,
+      includeLinks: input.includeLinks ?? true
+    });
+
+    try {
+      const snapshot = await this.collectPageSnapshot(input, "browser_snapshot");
+      await this.finishAction(action, {
+        urlAfter: snapshot.url,
+        title: snapshot.title,
+        readyState: snapshot.readyState,
+        textByteLength: (snapshot.text as InspectionValue).byteLength,
+        textRef: (snapshot.text as InspectionValue).ref,
+        elements: Array.isArray(snapshot.elements) ? snapshot.elements.length : undefined
+      });
+      return snapshot;
+    } catch (error) {
+      await this.failAction(action, error);
+      throw error;
+    }
+  }
+
   async browserGetDom(input: BrowserGetDomInput = {}): Promise<Record<string, unknown>> {
     assertRawCaptureAcknowledged(input, "browser_get_dom");
     const page = this.requirePage();
@@ -730,13 +842,15 @@ export class RawTraceRuntime {
           limit
         })
       ]);
+      const elements = await this.enrichElementSummaries(page, scan.elements);
       const result = {
         url: page.url(),
         title,
         selector: input.selector,
         textContains: input.textContains,
         limit,
-        ...scan
+        total: scan.total,
+        elements
       };
 
       await this.finishAction(action, {
@@ -744,7 +858,7 @@ export class RawTraceRuntime {
         selector: input.selector,
         textContains: input.textContains,
         total: scan.total,
-        returned: scan.elements.length
+        returned: elements.length
       });
       return result;
     } catch (error) {
@@ -889,6 +1003,62 @@ export class RawTraceRuntime {
     } catch (error) {
       await this.failAction(action, error);
       throw error;
+    }
+  }
+
+  async browserScreenshotAnnotated(input: BrowserScreenshotAnnotatedInput = {}): Promise<Record<string, unknown>> {
+    assertRawCaptureAcknowledged(input, "browser_screenshot_annotated");
+    const page = this.requirePage();
+    const selectors = uniqueStrings([input.selector, ...(input.selectors ?? [])].filter((selector): selector is string => Boolean(selector)));
+    const boxes = input.boxes ?? [];
+    if (selectors.length === 0 && boxes.length === 0) {
+      throw new RawTraceError("ANNOTATION_TARGET_REQUIRED", "browser_screenshot_annotated requires selector, selectors, or boxes.");
+    }
+    const action = await this.startAction("inspect.screenshot_annotated", {
+      selector: input.selector,
+      selectors,
+      boxes: boxes.length,
+      fullPage: input.fullPage,
+      outputPath: input.outputPath
+    });
+    const overlayId = `rawtrace-annotation-${randomBytes(6).toString("hex")}`;
+
+    try {
+      const annotations = await page.evaluate(installAnnotationOverlay, {
+        overlayId,
+        selectors,
+        boxes
+      });
+      if (annotations.length === 0) {
+        throw new RawTraceError("ANNOTATION_TARGET_NOT_FOUND", "No annotation targets matched selectors or boxes.", {
+          selectors,
+          boxes: boxes.length
+        });
+      }
+      const bytes = await page.screenshot({ fullPage: input.fullPage ?? false });
+      const artifact = await this.writeInspectionArtifact("screenshot_annotated", bytes, "binary", "png", input.outputPath);
+      const result = {
+        url: page.url(),
+        title: await page.title(),
+        selector: input.selector,
+        selectors,
+        fullPage: input.fullPage ?? false,
+        annotations,
+        ...artifact
+      };
+      await this.finishAction(action, {
+        urlAfter: page.url(),
+        annotationCount: annotations.length,
+        outputPath: artifact.outputPath,
+        byteLength: artifact.byteLength,
+        sha256: artifact.sha256
+      });
+      return result;
+    } catch (error) {
+      await this.failAction(action, error);
+      throw error;
+    } finally {
+      await page.evaluate(removeAnnotationOverlay, overlayId).catch(() => undefined);
     }
   }
 
@@ -1352,6 +1522,68 @@ export class RawTraceRuntime {
         checked,
         selector: input.selector,
         url: page.url()
+      };
+    } catch (error) {
+      await this.failAction(action, error);
+      throw error;
+    }
+  }
+
+  async browserObserveActionResult(input: BrowserObserveActionResultInput): Promise<Record<string, unknown>> {
+    assertRawCaptureAcknowledged(input, "browser_observe_action_result");
+    if (input.action.type === "eval") {
+      assertDangerousEvalAcknowledged(input, "browser_observe_action_result");
+    }
+
+    const action = await this.startAction("observe_action_result", {
+      observedAction: input.action.type,
+      includeScreenshot: input.includeScreenshot ?? false
+    });
+
+    try {
+      const before = await this.collectPageSnapshot(
+        {
+          acknowledgeRawCapture: true,
+          ...(input.beforeSnapshot ?? {})
+        },
+        "browser_observe_action_result"
+      );
+      const beforeScreenshot = input.includeScreenshot ? await this.captureScreenshotArtifact("observe_before") : undefined;
+
+      const actionResult = await this.performObservedAction(input);
+      if (input.waitAfterMs && input.waitAfterMs > 0) {
+        await delay(input.waitAfterMs);
+      }
+
+      const after = await this.collectPageSnapshot(
+        {
+          acknowledgeRawCapture: true,
+          ...(input.afterSnapshot ?? input.beforeSnapshot ?? {})
+        },
+        "browser_observe_action_result"
+      );
+      const afterScreenshot = input.includeScreenshot ? await this.captureScreenshotArtifact("observe_after") : undefined;
+      const diff = diffSnapshots(before, after);
+
+      await this.finishAction(action, {
+        urlAfter: after.url,
+        observedAction: input.action.type,
+        urlChanged: diff.url.changed,
+        titleChanged: diff.title.changed,
+        textChanged: diff.visibleTextMatched.changed
+      });
+
+      return {
+        before,
+        actionResult,
+        after,
+        diff,
+        screenshots: input.includeScreenshot
+          ? {
+              before: beforeScreenshot,
+              after: afterScreenshot
+            }
+          : undefined
       };
     } catch (error) {
       await this.failAction(action, error);
@@ -1854,6 +2086,67 @@ export class RawTraceRuntime {
     }
   }
 
+  async browserPollUntil(input: BrowserPollUntilInput): Promise<Record<string, unknown>> {
+    assertRawCaptureAcknowledged(input, "browser_poll_until");
+    const timeoutMs = input.timeoutMs ?? DEFAULT_POLL_TIMEOUT_MS;
+    const intervalMs = input.intervalMs ?? DEFAULT_POLL_INTERVAL_MS;
+    if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+      throw new RawTraceError("INVALID_TIMEOUT", "browser_poll_until timeoutMs must be a positive integer.");
+    }
+    if (!Number.isFinite(intervalMs) || intervalMs <= 0) {
+      throw new RawTraceError("INVALID_INTERVAL", "browser_poll_until intervalMs must be a positive integer.");
+    }
+
+    const action = await this.startAction("poll_until", {
+      timeoutMs,
+      intervalMs,
+      match: input.match ?? "all",
+      conditionCount: input.conditions.length
+    });
+    const startedAt = Date.now();
+    const samples: Array<Record<string, unknown>> = [];
+
+    try {
+      let matched = false;
+      while (Date.now() - startedAt <= timeoutMs) {
+        const sample = await this.collectPollSample(input, Date.now() - startedAt);
+        samples.push(sample);
+        matched = Boolean(sample.matched);
+        if (matched || samples.length >= MAX_POLL_SAMPLES) {
+          break;
+        }
+        await delay(Math.min(intervalMs, Math.max(0, timeoutMs - (Date.now() - startedAt))));
+      }
+
+      const finalSnapshot = await this.collectPageSnapshot(
+        {
+          acknowledgeRawCapture: true,
+          maxTextBytes: input.snapshot?.maxTextBytes,
+          elementsLimit: input.snapshot?.elementsLimit,
+          includeInputs: input.snapshot?.includeInputs,
+          includeLinks: input.snapshot?.includeLinks
+        },
+        "browser_poll_until"
+      );
+      await this.finishAction(action, {
+        urlAfter: finalSnapshot.url,
+        matched,
+        elapsedMs: Date.now() - startedAt,
+        samples: samples.length
+      });
+      return {
+        matched,
+        elapsedMs: Date.now() - startedAt,
+        sampleCount: samples.length,
+        samples,
+        finalSnapshot
+      };
+    } catch (error) {
+      await this.failAction(action, error);
+      throw error;
+    }
+  }
+
   private attachContext(context: BrowserContext): void {
     for (const page of context.pages()) {
       this.registerPage(page);
@@ -1968,6 +2261,291 @@ export class RawTraceRuntime {
       return page.locator(`[name="${quoteCssAttribute(field.name)}"]`);
     }
     throw new RawTraceError("FORM_FIELD_TARGET_REQUIRED", "Form field requires selector, name, label, or placeholder.");
+  }
+
+  private async performObservedAction(input: BrowserObserveActionResultInput): Promise<Record<string, unknown>> {
+    const { action } = input;
+    if (action.type === "click") {
+      return await this.browserClick({ selector: action.selector, timeoutMs: action.timeoutMs });
+    }
+    if (action.type === "type") {
+      return await this.browserType({ selector: action.selector, text: action.text, delayMs: action.delayMs, timeoutMs: action.timeoutMs });
+    }
+    if (action.type === "press") {
+      return await this.browserPress({ key: action.key, selector: action.selector, delayMs: action.delayMs, timeoutMs: action.timeoutMs });
+    }
+    if (action.type === "check") {
+      return await this.browserCheck({ selector: action.selector, checked: action.checked, timeoutMs: action.timeoutMs });
+    }
+    if (action.type === "select") {
+      return await this.browserSelectOption({ selector: action.selector, values: action.values, timeoutMs: action.timeoutMs });
+    }
+    if (action.type === "hover") {
+      return await this.browserHover({ selector: action.selector, timeoutMs: action.timeoutMs });
+    }
+    if (action.type === "scroll") {
+      return await this.browserScroll({ selector: action.selector, deltaX: action.deltaX, deltaY: action.deltaY, timeoutMs: action.timeoutMs });
+    }
+    if (action.type === "reload") {
+      return await this.browserReload({ waitUntil: action.waitUntil, timeoutMs: action.timeoutMs });
+    }
+    if (action.type === "navigate") {
+      return await this.browserNavigate({ url: action.url, waitUntil: action.waitUntil });
+    }
+
+    return await this.browserEval({
+      expression: action.expression,
+      arg: action.arg,
+      frameUrlContains: action.frameUrlContains,
+      frameName: action.frameName,
+      timeoutMs: action.timeoutMs,
+      maxBytes: action.maxBytes,
+      acknowledgeRawCapture: true,
+      acknowledgeDangerousEval: input.acknowledgeDangerousEval
+    });
+  }
+
+  private async captureScreenshotArtifact(kind: string): Promise<InspectionArtifact> {
+    const page = this.requirePage();
+    const bytes = await page.screenshot({ fullPage: false });
+    return await this.writeInspectionArtifact(kind, bytes, "binary", "png");
+  }
+
+  private async collectPageSnapshot(input: BrowserSnapshotInput = {}, toolName: string): Promise<Record<string, unknown>> {
+    const page = this.requirePage();
+    const elementsLimit = normalizeSnapshotElementsLimit(input.elementsLimit, toolName);
+    const maxTextBytes = normalizeSnapshotTextBytes(input.maxTextBytes, toolName);
+    const includeInputs = input.includeInputs ?? true;
+    const includeLinks = input.includeLinks ?? true;
+
+    if (input.selector && (await page.locator(input.selector).count()) === 0) {
+      throw new RawTraceError("ELEMENT_NOT_FOUND", `No element matches selector: ${input.selector}`, {
+        selector: input.selector
+      });
+    }
+
+    const [title, readyState, activeElement, textData, elementScan, extras] = await Promise.all([
+      page.title(),
+      page.evaluate(() => document.readyState),
+      page.evaluate(summarizeActiveElement),
+      page.evaluate(readSnapshotText, { selector: input.selector }),
+      page.evaluate(summarizeInteractiveElements, {
+        selector: input.selector,
+        limit: elementsLimit
+      }),
+      page.evaluate(summarizeSnapshotExtras, {
+        selector: input.selector,
+        limit: elementsLimit,
+        includeInputs,
+        includeLinks
+      })
+    ]);
+
+    const elements = await this.enrichElementSummaries(page, elementScan.elements);
+    const text = await this.materializeInspectionValue("snapshot_text", textData.text, maxTextBytes, "txt");
+    const frames = page.frames().map((frame) => ({
+      name: frame.name(),
+      url: frame.url(),
+      parentUrl: frame.parentFrame()?.url()
+    }));
+
+    return {
+      url: page.url(),
+      title,
+      readyState,
+      viewport: page.viewportSize(),
+      frames,
+      activeElement,
+      selector: input.selector,
+      maxTextBytes,
+      text,
+      elementsLimit,
+      elementsTotal: elementScan.total,
+      elements,
+      inputs: extras.inputs,
+      links: extras.links,
+      formsSummary: extras.formsSummary
+    };
+  }
+
+  private async enrichElementSummaries(page: Page, elements: Array<Record<string, unknown>>): Promise<Array<Record<string, unknown>>> {
+    const enriched: Array<Record<string, unknown>> = [];
+    for (const element of elements) {
+      const selectorCandidates = Array.isArray(element.selectorCandidates)
+        ? element.selectorCandidates.filter((candidate): candidate is string => typeof candidate === "string" && candidate.length > 0)
+        : [];
+      let recommendedSelector = selectorCandidates[0];
+      let selectorCount: number | undefined;
+      let selectorUnique = false;
+
+      for (const candidate of selectorCandidates) {
+        const count = await page.locator(candidate).count().catch(() => undefined);
+        if (selectorCount === undefined && count !== undefined) {
+          selectorCount = count;
+          recommendedSelector = candidate;
+        }
+        if (count === 1) {
+          recommendedSelector = candidate;
+          selectorCount = count;
+          selectorUnique = true;
+          break;
+        }
+      }
+
+      let enabled = !(element.disabled === true);
+      let visible = element.visible === true;
+      if (recommendedSelector) {
+        const locator = page.locator(recommendedSelector).first();
+        visible = await locator.isVisible({ timeout: 250 }).catch(() => visible);
+        enabled = await locator.isEnabled({ timeout: 250 }).catch(() => enabled);
+      }
+      const boundingBox = element.boundingBox as { width?: number; height?: number } | undefined;
+      const clickable = visible && enabled && Number(boundingBox?.width ?? 0) > 0 && Number(boundingBox?.height ?? 0) > 0;
+
+      enriched.push({
+        ...element,
+        recommendedSelector,
+        selectorCount,
+        selectorUnique,
+        visible,
+        enabled,
+        clickable,
+        stableSelectorScore: recommendedSelector ? scoreElementRecommendedSelector(recommendedSelector, selectorCount) : 0
+      });
+    }
+    return enriched;
+  }
+
+  private async collectPollSample(input: BrowserPollUntilInput, elapsedMs: number): Promise<Record<string, unknown>> {
+    const page = this.requirePage();
+    const [title, readyState, bodyText] = await Promise.all([
+      page.title().catch(() => ""),
+      page.evaluate(() => document.readyState).catch(() => "unknown"),
+      page.evaluate(() => document.body?.innerText ?? document.documentElement.innerText ?? "").catch(() => "")
+    ]);
+    const url = page.url();
+    const conditionResults = [];
+
+    for (const condition of input.conditions) {
+      const rawMatched = await this.evaluatePollCondition(page, condition, url, bodyText);
+      const matched = condition.negate === true ? !rawMatched.matched : rawMatched.matched;
+      conditionResults.push({
+        ...rawMatched,
+        matched,
+        negated: condition.negate === true
+      });
+    }
+
+    const matchMode = input.match ?? "all";
+    const matched = matchMode === "any" ? conditionResults.some((result) => result.matched) : conditionResults.every((result) => result.matched);
+    return {
+      elapsedMs,
+      url,
+      title,
+      readyState,
+      textPreview: bodyText.replace(/\s+/g, " ").trim().slice(0, 700),
+      matched,
+      conditions: conditionResults
+    };
+  }
+
+  private async evaluatePollCondition(
+    page: Page,
+    condition: BrowserPollUntilInput["conditions"][number],
+    url: string,
+    bodyText: string
+  ): Promise<Record<string, unknown> & { matched: boolean }> {
+    if (condition.type === "text") {
+      const text = condition.selector
+        ? await page
+            .locator(condition.selector)
+            .first()
+            .innerText({ timeout: 250 })
+            .catch(() => "")
+        : bodyText;
+      return {
+        type: condition.type,
+        selector: condition.selector,
+        text: condition.text,
+        matched: text.includes(condition.text)
+      };
+    }
+
+    if (condition.type === "url") {
+      let matched = true;
+      if (condition.contains) matched = matched && url.includes(condition.contains);
+      if (condition.equals) matched = matched && url === condition.equals;
+      if (condition.regex) matched = matched && compileRegex(condition.regex, "browser_poll_until").test(url);
+      return {
+        type: condition.type,
+        contains: condition.contains,
+        equals: condition.equals,
+        regex: condition.regex,
+        currentUrl: url,
+        matched
+      };
+    }
+
+    if (condition.type === "selector") {
+      const locator = page.locator(condition.selector);
+      const count = await locator.count().catch(() => 0);
+      const visible = count > 0 ? await locator.first().isVisible({ timeout: 250 }).catch(() => false) : false;
+      const state = condition.state ?? "visible";
+      const matched =
+        state === "attached" ? count > 0 : state === "detached" ? count === 0 : state === "hidden" ? count === 0 || !visible : visible;
+      return {
+        type: condition.type,
+        selector: condition.selector,
+        state,
+        count,
+        visible,
+        matched
+      };
+    }
+
+    if (condition.type === "elementValue") {
+      const locator = page.locator(condition.selector).first();
+      const value = await locator
+        .evaluate((element) => {
+          if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement) {
+            return element.value;
+          }
+          return element.textContent ?? "";
+        })
+        .catch(() => "");
+      let matched = true;
+      if (condition.value !== undefined) matched = matched && value === condition.value;
+      if (condition.contains) matched = matched && value.includes(condition.contains);
+      if (condition.regex) matched = matched && compileRegex(condition.regex, "browser_poll_until").test(value);
+      return {
+        type: condition.type,
+        selector: condition.selector,
+        value,
+        expectedValue: condition.value,
+        contains: condition.contains,
+        regex: condition.regex,
+        matched
+      };
+    }
+
+    const loggedInByText = condition.loggedInText ? bodyText.includes(condition.loggedInText) : false;
+    const loggedInByUrl = condition.loggedInUrlContains ? url.includes(condition.loggedInUrlContains) : false;
+    const loggedInBySelector = condition.selector
+      ? await page.locator(condition.selector).first().isVisible({ timeout: 250 }).catch(() => false)
+      : false;
+    const loggedOutByText = condition.loggedOutText ? bodyText.includes(condition.loggedOutText) : false;
+    const loggedOutByUrl = condition.loginUrlContains ? url.includes(condition.loginUrlContains) : false;
+    const hasPositiveSignal = Boolean(condition.loggedInText || condition.loggedInUrlContains || condition.selector);
+    const matched = hasPositiveSignal ? loggedInByText || loggedInByUrl || loggedInBySelector : !(loggedOutByText || loggedOutByUrl);
+    return {
+      type: condition.type,
+      loggedInByText,
+      loggedInByUrl,
+      loggedInBySelector,
+      loggedOutByText,
+      loggedOutByUrl,
+      matched: matched && !(loggedOutByText || loggedOutByUrl)
+    };
   }
 
   private async materializeResponseBody(
@@ -2350,6 +2928,32 @@ function normalizeBoundedLimit(value: number | undefined, defaultValue: number, 
     });
   }
   return limit;
+}
+
+function normalizeSnapshotTextBytes(value: number | undefined, toolName: string): number {
+  const maxBytes = Math.trunc(value ?? DEFAULT_SNAPSHOT_TEXT_BYTES);
+  if (!Number.isFinite(maxBytes) || maxBytes < 0) {
+    throw new RawTraceError("INVALID_MAX_BYTES", `${toolName} maxTextBytes must be a non-negative integer.`);
+  }
+  return maxBytes;
+}
+
+function normalizeSnapshotElementsLimit(value: number | undefined, toolName: string): number {
+  return normalizeBoundedLimit(value, DEFAULT_SNAPSHOT_ELEMENTS_LIMIT, MAX_SNAPSHOT_ELEMENTS_LIMIT, toolName);
+}
+
+function scoreElementRecommendedSelector(selector: string, count: number | undefined): number {
+  let score = count === 1 ? 700 : 250;
+  if (/^\[[^\]]*data-(testid|test|cy)=/.test(selector)) score += 220;
+  if (/^#[A-Za-z_][\w-]*$/.test(selector)) score += 190;
+  if (/\[aria-label=/.test(selector)) score += 150;
+  if (/\[placeholder=/.test(selector)) score += 120;
+  if (/:has-text\(/.test(selector)) score += 110;
+  if (/>/.test(selector)) score -= countOccurrences(selector, ">") * 35;
+  if (/:nth-of-type\(/.test(selector)) score -= 120;
+  if (isProbablyDynamicSelectorText(selector)) score -= 250;
+  score -= Math.min(selector.length, 180);
+  return Math.round(Math.max(0, Math.min(1000, score)));
 }
 
 function normalizeSelectOptionValues(values: BrowserSelectOptionInput["values"]):
@@ -2992,6 +3596,263 @@ function summarizeActiveElement(): Record<string, unknown> | null {
       height: Math.round(rect.height)
     }
   };
+}
+
+function readSnapshotText(input: { selector?: string }): { text: string } {
+  const root = input.selector ? document.querySelector(input.selector) : document.body || document.documentElement;
+  const element = root instanceof HTMLElement ? root : document.body || document.documentElement;
+  return {
+    text: element.innerText
+  };
+}
+
+function summarizeSnapshotExtras(input: {
+  selector?: string;
+  limit: number;
+  includeInputs: boolean;
+  includeLinks: boolean;
+}): Record<string, unknown> {
+  const root = input.selector ? document.querySelector(input.selector) : document;
+  const scope = root ?? document;
+  const compact = (value: string | null | undefined, max = 160): string | undefined => {
+    const normalized = String(value ?? "").replace(/\s+/g, " ").trim();
+    if (!normalized) return undefined;
+    return normalized.length > max ? `${normalized.slice(0, max)}...` : normalized;
+  };
+  const visibleFor = (element: Element): boolean => {
+    const rect = element.getBoundingClientRect();
+    const style = window.getComputedStyle(element);
+    return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none";
+  };
+  const boxFor = (element: Element): Record<string, number> => {
+    const rect = element.getBoundingClientRect();
+    return {
+      x: Math.round(rect.x),
+      y: Math.round(rect.y),
+      width: Math.round(rect.width),
+      height: Math.round(rect.height)
+    };
+  };
+  const inputElements = input.includeInputs
+    ? Array.from(scope.querySelectorAll("input, textarea, select")).slice(0, input.limit)
+    : [];
+  const linkElements = input.includeLinks ? Array.from(scope.querySelectorAll("a[href]")).slice(0, input.limit) : [];
+  const forms = Array.from(scope.querySelectorAll("form"));
+
+  return {
+    inputs: inputElements.map((element, index) => {
+      const inputElement = element instanceof HTMLInputElement ? element : undefined;
+      const textElement = element instanceof HTMLTextAreaElement ? element : undefined;
+      const selectElement = element instanceof HTMLSelectElement ? element : undefined;
+      return {
+        index,
+        tagName: element.tagName.toLowerCase(),
+        type: inputElement?.type,
+        id: element.id || undefined,
+        name: inputElement?.name || textElement?.name || selectElement?.name || undefined,
+        placeholder: inputElement?.placeholder || textElement?.placeholder || undefined,
+        value:
+          inputElement?.type === "file"
+            ? Array.from(inputElement.files ?? []).map((file) => file.name)
+            : (inputElement?.value ?? textElement?.value ?? selectElement?.value),
+        checked: inputElement && ["checkbox", "radio"].includes(inputElement.type) ? inputElement.checked : undefined,
+        disabled: inputElement?.disabled ?? textElement?.disabled ?? selectElement?.disabled ?? false,
+        visible: visibleFor(element),
+        boundingBox: boxFor(element)
+      };
+    }),
+    links: linkElements.map((element, index) => ({
+      index,
+      text: compact(element.textContent),
+      href: element instanceof HTMLAnchorElement ? element.href : undefined,
+      visible: visibleFor(element),
+      boundingBox: boxFor(element)
+    })),
+    formsSummary: {
+      totalForms: forms.length,
+      totalControls: Array.from(scope.querySelectorAll("input, textarea, select, button")).length
+    }
+  };
+}
+
+function diffSnapshots(before: Record<string, unknown>, after: Record<string, unknown>): {
+  url: { before: unknown; after: unknown; changed: boolean };
+  title: { before: unknown; after: unknown; changed: boolean };
+  visibleTextMatched: {
+    beforeSha256?: string;
+    afterSha256?: string;
+    beforeByteLength?: number;
+    afterByteLength?: number;
+    changed: boolean;
+    beforePreview?: string;
+    afterPreview?: string;
+  };
+  inputValues: { changed: boolean; changes: Array<Record<string, unknown>> };
+  elementsCount: { before: unknown; after: unknown; changed: boolean };
+} {
+  const beforeText = snapshotText(before);
+  const afterText = snapshotText(after);
+  const beforeInputs = snapshotInputs(before);
+  const afterInputs = snapshotInputs(after);
+  const inputKeys = uniqueStrings([...Object.keys(beforeInputs), ...Object.keys(afterInputs)]);
+  const inputValueChanges = inputKeys
+    .map((key) => ({
+      key,
+      before: beforeInputs[key],
+      after: afterInputs[key],
+      changed: beforeInputs[key] !== afterInputs[key]
+    }))
+    .filter((change) => change.changed);
+
+  return {
+    url: {
+      before: before.url,
+      after: after.url,
+      changed: before.url !== after.url
+    },
+    title: {
+      before: before.title,
+      after: after.title,
+      changed: before.title !== after.title
+    },
+    visibleTextMatched: {
+      beforeSha256: beforeText.sha256,
+      afterSha256: afterText.sha256,
+      beforeByteLength: beforeText.byteLength,
+      afterByteLength: afterText.byteLength,
+      changed: beforeText.sha256 !== afterText.sha256,
+      beforePreview: beforeText.value?.slice(0, 500),
+      afterPreview: afterText.value?.slice(0, 500)
+    },
+    inputValues: {
+      changed: inputValueChanges.length > 0,
+      changes: inputValueChanges
+    },
+    elementsCount: {
+      before: before.elementsTotal,
+      after: after.elementsTotal,
+      changed: before.elementsTotal !== after.elementsTotal
+    }
+  };
+}
+
+function snapshotText(snapshot: Record<string, unknown>): { value?: string; sha256?: string; byteLength?: number } {
+  const text = snapshot.text;
+  if (!text || typeof text !== "object") return {};
+  const record = text as Record<string, unknown>;
+  return {
+    value: typeof record.value === "string" ? record.value : undefined,
+    sha256: typeof record.sha256 === "string" ? record.sha256 : undefined,
+    byteLength: typeof record.byteLength === "number" ? record.byteLength : undefined
+  };
+}
+
+function snapshotInputs(snapshot: Record<string, unknown>): Record<string, string> {
+  const inputs = Array.isArray(snapshot.inputs) ? snapshot.inputs : [];
+  const out: Record<string, string> = {};
+  for (const [index, input] of inputs.entries()) {
+    if (!input || typeof input !== "object") continue;
+    const record = input as Record<string, unknown>;
+    const key = String(record.id ?? record.name ?? record.placeholder ?? `index:${index}`);
+    out[key] = JSON.stringify(record.value ?? "");
+  }
+  return out;
+}
+
+function installAnnotationOverlay(input: {
+  overlayId: string;
+  selectors: string[];
+  boxes: Array<{ x: number; y: number; width: number; height: number; label?: string; color?: string }>;
+}): Array<Record<string, unknown>> {
+  document.getElementById(input.overlayId)?.remove();
+  const overlay = document.createElement("div");
+  overlay.id = input.overlayId;
+  overlay.style.position = "absolute";
+  overlay.style.left = "0";
+  overlay.style.top = "0";
+  overlay.style.width = `${Math.max(document.documentElement.scrollWidth, window.innerWidth)}px`;
+  overlay.style.height = `${Math.max(document.documentElement.scrollHeight, window.innerHeight)}px`;
+  overlay.style.pointerEvents = "none";
+  overlay.style.zIndex = "2147483647";
+  overlay.style.contain = "layout style paint";
+
+  const annotations: Array<Record<string, unknown>> = [];
+  const addBox = (box: { x: number; y: number; width: number; height: number; label?: string; color?: string }, source: string): void => {
+    if (box.width <= 0 || box.height <= 0) return;
+    const color = box.color || "#ef4444";
+    const marker = document.createElement("div");
+    marker.style.position = "absolute";
+    marker.style.left = `${Math.round(box.x + window.scrollX)}px`;
+    marker.style.top = `${Math.round(box.y + window.scrollY)}px`;
+    marker.style.width = `${Math.round(box.width)}px`;
+    marker.style.height = `${Math.round(box.height)}px`;
+    marker.style.border = `3px solid ${color}`;
+    marker.style.boxShadow = `0 0 0 2px rgba(255,255,255,0.9), 0 0 12px ${color}`;
+    marker.style.borderRadius = "4px";
+    marker.style.background = "rgba(239, 68, 68, 0.08)";
+
+    if (box.label) {
+      const label = document.createElement("div");
+      label.textContent = box.label;
+      label.style.position = "absolute";
+      label.style.left = "0";
+      label.style.top = "-24px";
+      label.style.padding = "2px 6px";
+      label.style.font = "12px/18px sans-serif";
+      label.style.color = "#fff";
+      label.style.background = color;
+      label.style.borderRadius = "4px";
+      label.style.whiteSpace = "nowrap";
+      marker.appendChild(label);
+    }
+
+    overlay.appendChild(marker);
+    annotations.push({
+      source,
+      label: box.label,
+      color,
+      boundingBox: {
+        x: Math.round(box.x),
+        y: Math.round(box.y),
+        width: Math.round(box.width),
+        height: Math.round(box.height)
+      }
+    });
+  };
+
+  for (const selector of input.selectors) {
+    for (const [index, element] of Array.from(document.querySelectorAll(selector)).entries()) {
+      const rect = element.getBoundingClientRect();
+      addBox(
+        {
+          x: rect.x,
+          y: rect.y,
+          width: rect.width,
+          height: rect.height,
+          label: selector,
+          color: index === 0 ? "#ef4444" : "#3b82f6"
+        },
+        selector
+      );
+    }
+  }
+  for (const [index, box] of input.boxes.entries()) {
+    addBox(
+      {
+        ...box,
+        label: box.label ?? `box ${index + 1}`,
+        color: box.color ?? "#22c55e"
+      },
+      "box"
+    );
+  }
+
+  document.documentElement.appendChild(overlay);
+  return annotations;
+}
+
+function removeAnnotationOverlay(overlayId: string): void {
+  document.getElementById(overlayId)?.remove();
 }
 
 function buildSelectorOptimizationScan(

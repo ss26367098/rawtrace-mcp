@@ -102,7 +102,7 @@ If `maxBodyBytes` prevents a request or response body from being captured, RawTr
 
 ## Inspection Artifacts
 
-Current-page inspection and raw body tools such as `browser_get_dom`, `browser_screenshot`, `browser_eval`, `browser_wait_for_response_body`, downloads, and storageState export may also write raw artifacts to `bodies/` when a monitor is running. They use the same reference shape as `bodyRef`, for example:
+Current-page inspection and raw body tools such as `browser_get_dom`, `browser_snapshot`, `browser_screenshot`, `browser_screenshot_annotated`, `browser_eval`, `browser_observe_action_result`, `browser_wait_for_response_body`, downloads, and storageState export may also write raw artifacts to `bodies/` when a monitor is running. They use the same reference shape as `bodyRef`, for example:
 
 ```json
 {
@@ -119,4 +119,4 @@ When no monitor is running, inspection artifacts are stored under `rawtrace-trac
 
 `monitor_read_artifact` reads only files inside a trace session directory. It does not add new event stream fields; it exposes already-written `bodyRef`, `htmlRef`, `textRef`, snapshot, or artifact content through MCP.
 
-Inspection, eval, tab, dialog, credential, file, permission, geolocation, form, and browser action tools only write compact `actions` metadata while monitoring is active, such as tool start/end/error, selector, pageId, byte length, and artifact references. They do not put full page HTML/text, screenshot bytes, large eval results, full response bodies, local file contents, or full storageState JSON into `actions.ndjson`.
+Inspection, snapshot, polling, before/after observation, eval, tab, dialog, credential, file, permission, geolocation, form, and browser action tools only write compact `actions` metadata while monitoring is active, such as tool start/end/error, selector, pageId, condition counts, byte length, and artifact references. They do not put full page HTML/text, screenshot bytes, large eval results, full response bodies, local file contents, or full storageState JSON into `actions.ndjson`.

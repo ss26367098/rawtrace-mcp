@@ -1,5 +1,5 @@
 export const PACKAGE_NAME = "rawtrace-mcp";
-export const PACKAGE_VERSION = "0.2.0";
+export const PACKAGE_VERSION = "0.2.1";
 export const TRACE_SCHEMA_VERSION = "1.0.0";
 export const MAX_READ_EVENTS_LIMIT = 1000;
 export const DEFAULT_READ_EVENTS_LIMIT = 200;

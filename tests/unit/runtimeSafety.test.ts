@@ -46,12 +46,36 @@ describe("runtime safety", () => {
     await expect(runtime.browserGetForms({})).rejects.toMatchObject({
       code: "RAW_CAPTURE_ACK_REQUIRED"
     } satisfies Partial<RawTraceError>);
+    await expect(runtime.browserSnapshot({})).rejects.toMatchObject({
+      code: "RAW_CAPTURE_ACK_REQUIRED"
+    } satisfies Partial<RawTraceError>);
+    await expect(runtime.browserPollUntil({ conditions: [{ type: "text", text: "ready" }] })).rejects.toMatchObject({
+      code: "RAW_CAPTURE_ACK_REQUIRED"
+    } satisfies Partial<RawTraceError>);
+    await expect(runtime.browserScreenshotAnnotated({ selector: "#submit" })).rejects.toMatchObject({
+      code: "RAW_CAPTURE_ACK_REQUIRED"
+    } satisfies Partial<RawTraceError>);
+    await expect(
+      runtime.browserObserveActionResult({
+        action: { type: "click", selector: "#submit" }
+      })
+    ).rejects.toMatchObject({
+      code: "RAW_CAPTURE_ACK_REQUIRED"
+    } satisfies Partial<RawTraceError>);
   });
 
   it("requires explicit dangerous eval, credential, file, permission, and location acknowledgements", async () => {
     const runtime = new RawTraceRuntime();
 
     await expect(runtime.browserEval({ acknowledgeRawCapture: true, expression: "1 + 1" })).rejects.toMatchObject({
+      code: "DANGEROUS_EVAL_ACK_REQUIRED"
+    } satisfies Partial<RawTraceError>);
+    await expect(
+      runtime.browserObserveActionResult({
+        acknowledgeRawCapture: true,
+        action: { type: "eval", expression: "1 + 1" }
+      })
+    ).rejects.toMatchObject({
       code: "DANGEROUS_EVAL_ACK_REQUIRED"
     } satisfies Partial<RawTraceError>);
     await expect(runtime.browserGetCookies({ acknowledgeRawCapture: true })).rejects.toMatchObject({

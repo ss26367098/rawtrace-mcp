@@ -16,9 +16,11 @@ describe("MCP transports", () => {
     const tools = await client.listTools();
     const result = await client.callTool({ name: "monitor_start", arguments: {} });
     await client.close();
-    expect(tools.tools).toHaveLength(54);
+    expect(tools.tools).toHaveLength(59);
     expect(tools.tools.map((tool) => tool.name)).toContain("monitor_read_artifact");
     expect(tools.tools.map((tool) => tool.name)).toContain("browser_fill_form");
+    expect(tools.tools.map((tool) => tool.name)).toContain("browser_snapshot");
+    expect(tools.tools.map((tool) => tool.name)).toContain("browser_poll_until");
     expect(JSON.stringify(result)).toContain("RAW_CAPTURE_ACK_REQUIRED");
   });
 
@@ -32,9 +34,11 @@ describe("MCP transports", () => {
     await client.close();
     await http.close();
     await server.close();
-    expect(tools.tools).toHaveLength(54);
+    expect(tools.tools).toHaveLength(59);
     expect(tools.tools.map((tool) => tool.name)).toContain("browser_wait_for_response_body");
     expect(tools.tools.map((tool) => tool.name)).toContain("browser_wait_for_download");
+    expect(tools.tools.map((tool) => tool.name)).toContain("browser_attach_cdp");
+    expect(tools.tools.map((tool) => tool.name)).toContain("browser_screenshot_annotated");
     expect(JSON.stringify(result)).toContain("RAW_CAPTURE_ACK_REQUIRED");
   });
 });

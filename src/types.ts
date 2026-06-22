@@ -12,6 +12,15 @@ export interface BrowserLaunchInput {
   acknowledgeStorageStateOverwrite?: boolean;
 }
 
+export interface BrowserAttachCdpInput {
+  cdpUrl: string;
+  pageId?: string;
+  urlContains?: string;
+  titleContains?: string;
+  targetIndex?: number;
+  activate?: boolean;
+}
+
 export interface CaptureOptions {
   captureDom: boolean;
   captureNetwork: boolean;
@@ -137,6 +146,14 @@ export interface BrowserGetElementsInput extends RawCaptureAcknowledgementInput 
   limit?: number;
 }
 
+export interface BrowserSnapshotInput extends RawCaptureAcknowledgementInput {
+  selector?: string;
+  maxTextBytes?: number;
+  elementsLimit?: number;
+  includeInputs?: boolean;
+  includeLinks?: boolean;
+}
+
 export interface BrowserOptimizeSelectorInput extends RawCaptureAcknowledgementInput {
   selector: string;
   targetIndex?: number;
@@ -149,6 +166,21 @@ export interface BrowserOptimizeSelectorInput extends RawCaptureAcknowledgementI
 
 export interface BrowserScreenshotInput extends RawCaptureAcknowledgementInput {
   selector?: string;
+  fullPage?: boolean;
+  outputPath?: string;
+}
+
+export interface BrowserScreenshotAnnotatedInput extends RawCaptureAcknowledgementInput {
+  selector?: string;
+  selectors?: string[];
+  boxes?: Array<{
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    label?: string;
+    color?: string;
+  }>;
   fullPage?: boolean;
   outputPath?: string;
 }
@@ -203,6 +235,72 @@ export interface BrowserWaitForResponseInput {
 export interface BrowserWaitForResponseBodyInput extends RawCaptureAcknowledgementInput, BrowserWaitForResponseInput {
   maxBytes?: number;
   parseJson?: boolean;
+}
+
+export type BrowserPollCondition =
+  | {
+      type: "text";
+      text: string;
+      selector?: string;
+      negate?: boolean;
+    }
+  | {
+      type: "url";
+      contains?: string;
+      equals?: string;
+      regex?: string;
+      negate?: boolean;
+    }
+  | {
+      type: "selector";
+      selector: string;
+      state?: "attached" | "visible" | "hidden" | "detached";
+      negate?: boolean;
+    }
+  | {
+      type: "elementValue";
+      selector: string;
+      value?: string;
+      contains?: string;
+      regex?: string;
+      negate?: boolean;
+    }
+  | {
+      type: "authSignal";
+      loggedInText?: string;
+      loggedOutText?: string;
+      loginUrlContains?: string;
+      loggedInUrlContains?: string;
+      selector?: string;
+      negate?: boolean;
+    };
+
+export interface BrowserPollUntilInput extends RawCaptureAcknowledgementInput {
+  timeoutMs?: number;
+  intervalMs?: number;
+  match?: "all" | "any";
+  conditions: BrowserPollCondition[];
+  snapshot?: Partial<Pick<BrowserSnapshotInput, "maxTextBytes" | "elementsLimit" | "includeInputs" | "includeLinks">>;
+}
+
+export type BrowserObserveAction =
+  | ({ type: "click" } & { selector: string; timeoutMs?: number })
+  | ({ type: "type" } & { selector: string; text: string; delayMs?: number; timeoutMs?: number })
+  | ({ type: "press" } & BrowserPressInput)
+  | ({ type: "check" } & BrowserCheckInput)
+  | ({ type: "select" } & BrowserSelectOptionInput)
+  | ({ type: "hover" } & BrowserHoverInput)
+  | ({ type: "scroll" } & BrowserScrollInput)
+  | ({ type: "reload" } & { waitUntil?: "load" | "domcontentloaded" | "networkidle" | "commit"; timeoutMs?: number })
+  | ({ type: "navigate" } & { url: string; waitUntil?: "load" | "domcontentloaded" | "networkidle" | "commit" })
+  | ({ type: "eval" } & BrowserEvalInput);
+
+export interface BrowserObserveActionResultInput extends DangerousEvalAcknowledgementInput {
+  action: BrowserObserveAction;
+  beforeSnapshot?: Partial<BrowserSnapshotInput>;
+  afterSnapshot?: Partial<BrowserSnapshotInput>;
+  waitAfterMs?: number;
+  includeScreenshot?: boolean;
 }
 
 export interface BrowserUploadFileInput extends FileAccessAcknowledgementInput {

@@ -76,28 +76,28 @@ rawtrace-mcp --transport http --host 127.0.0.1 --port 3757
 
 HTTP binds to `127.0.0.1` by default. Binding to a non-loopback host requires `--unsafe-remote` and `--auth-token`.
 
-After changing MCP client configuration, restart the client or start a new session. The tools should appear with the server name you configured, for example `rawtrace.browser_get_elements`, `rawtrace.monitor_start`, and `rawtrace.monitor_search_events`. RawTrace currently exposes 54 tools; if only a subset appears, verify that Node.js is at least 22, `npx -y rawtrace-mcp` starts successfully, and the MCP client can read its configuration file.
+After changing MCP client configuration, restart the client or start a new session. The tools should appear with the server name you configured, for example `rawtrace.browser_get_elements`, `rawtrace.monitor_start`, and `rawtrace.monitor_search_events`. RawTrace currently exposes 59 tools; if only a subset appears, verify that Node.js is at least 22, `npx -y rawtrace-mcp` starts successfully, and the MCP client can read its configuration file.
 
 ## Tools
 
-RawTrace MCP currently exposes 54 MCP tools:
+RawTrace MCP currently exposes 59 MCP tools:
 
-- Browser lifecycle and tabs: `browser_launch`, `browser_close`, `browser_list_tabs`, `browser_new_tab`, `browser_switch_tab`, `browser_close_tab`.
+- Browser lifecycle and tabs: `browser_launch`, `browser_attach_cdp`, `browser_close`, `browser_list_tabs`, `browser_new_tab`, `browser_switch_tab`, `browser_close_tab`.
 - Navigation: `browser_navigate`, `browser_reload`, `browser_go_back`, `browser_go_forward`.
-- Page observation: `browser_get_state`, `browser_get_dom`, `browser_get_elements`, `browser_optimize_selector`, `browser_get_accessibility`, `browser_get_forms`, `browser_screenshot`, `browser_get_network`.
-- Browser actions: `browser_click`, `browser_type`, `browser_press`, `browser_hover`, `browser_scroll`, `browser_select_option`, `browser_check`, `browser_fill_form`, `browser_wait`, `browser_wait_for_response`, `browser_wait_for_response_body`, `browser_handle_dialog`.
+- Page observation: `browser_get_state`, `browser_snapshot`, `browser_get_dom`, `browser_get_elements`, `browser_optimize_selector`, `browser_get_accessibility`, `browser_get_forms`, `browser_screenshot`, `browser_screenshot_annotated`, `browser_get_network`.
+- Browser actions: `browser_click`, `browser_type`, `browser_press`, `browser_hover`, `browser_scroll`, `browser_select_option`, `browser_check`, `browser_fill_form`, `browser_wait`, `browser_poll_until`, `browser_observe_action_result`, `browser_wait_for_response`, `browser_wait_for_response_body`, `browser_handle_dialog`.
 - Files, downloads, and environment: `browser_upload_file`, `browser_wait_for_download`, `browser_get_downloads`, `browser_set_viewport`, `browser_grant_permissions`, `browser_set_geolocation`.
 - Raw trace tools: `monitor_start`, `monitor_stop`, `monitor_list_sessions`, `monitor_get_manifest`, `monitor_get_summary`, `monitor_read_events`, `monitor_search_events`, `monitor_search_bodies`, `monitor_read_artifact`, `monitor_export`.
 - Dangerous page execution: `browser_eval`.
 - Credential and browser state tools: `browser_get_cookies`, `browser_set_cookies`, `browser_clear_cookies`, `browser_get_storage`, `browser_set_storage`, `browser_export_storage_state`, `browser_import_storage_state`.
 
-Inspection tools that read raw page content, forms, response bodies, downloads, or trace artifacts require `acknowledgeRawCapture: true`, the same safety acknowledgment used by `monitor_start`. `browser_eval` also requires `acknowledgeDangerousEval: true`. If `browser_eval` times out, RawTrace closes the timed-out page and switches to another or new page, because browser-side JavaScript evaluation cannot be safely canceled in place.
+Inspection tools that read raw page content, forms, response bodies, downloads, screenshots, or trace artifacts require `acknowledgeRawCapture: true`, the same safety acknowledgment used by `monitor_start`. `browser_snapshot`, `browser_poll_until`, `browser_observe_action_result`, and `browser_screenshot_annotated` can return or save raw page text, input values, element metadata, screenshots, and before/after diffs. `browser_eval` also requires `acknowledgeDangerousEval: true`; `browser_observe_action_result` requires the same dangerous acknowledgment when its action is `eval`. If eval times out, RawTrace closes the timed-out page and switches to another or new page, because browser-side JavaScript evaluation cannot be safely canceled in place.
 
 Credential/state tools require both `acknowledgeRawCapture: true` and `acknowledgeCredentialAccess: true`; `browser_launch` requires the same acknowledgments when using `storageStatePath`. Applying Playwright `storageState` clears existing cookies, localStorage, and IndexedDB before importing the new state. For CDP-connected browsers or explicit `userDataDir` profiles, `browser_launch({ storageStatePath })` and `browser_import_storage_state` also require `acknowledgeStorageStateOverwrite: true`.
 
 `browser_upload_file` requires `acknowledgeFileAccess: true`. `browser_grant_permissions` requires `acknowledgePermissionChange: true`. `browser_set_geolocation` requires `acknowledgeLocationAccess: true`. These acknowledgments are separate so a caller cannot accidentally treat raw capture consent as file, permission, or location consent.
 
-When no monitor is running, large DOM/text, screenshots, eval results, response bodies, and storageState artifacts are written under `rawtrace-traces/inspections/`. When a monitor is active, large raw values are written under the trace `bodies/` directory and returned by reference. `monitor_read_artifact` can read only files inside a trace session directory and rejects path traversal such as `../`.
+When no monitor is running, large DOM/text, snapshots, screenshots, eval results, response bodies, and storageState artifacts are written under `rawtrace-traces/inspections/`. When a monitor is active, large raw values are written under the trace `bodies/` directory and returned by reference. `monitor_read_artifact` can read only files inside a trace session directory and rejects path traversal such as `../`.
 
 ## Trace Output
 

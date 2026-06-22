@@ -19,6 +19,9 @@ export function createRawTraceMcpServer(runtime = new RawTraceRuntime()): McpSer
   registerTool(server, "browser_launch", "Launch or connect to Chromium.", browserLaunchSchema, (input) =>
     runtime.browserLaunch(input)
   );
+  registerTool(server, "browser_attach_cdp", "Attach to an existing Chromium CDP endpoint and select a tab by URL/title/pageId.", browserAttachCdpSchema, (input) =>
+    runtime.browserAttachCdp(input)
+  );
   registerTool(server, "browser_navigate", "Navigate the active page.", browserNavigateSchema, (input) =>
     runtime.browserNavigate(input)
   );
@@ -35,6 +38,9 @@ export function createRawTraceMcpServer(runtime = new RawTraceRuntime()): McpSer
   registerTool(server, "browser_get_state", "Inspect the current page URL, title, frames, viewport, and focused element.", browserGetStateSchema, (input) =>
     runtime.browserGetState(input)
   );
+  registerTool(server, "browser_snapshot", "Return a combined state/text/elements snapshot for the active page.", browserSnapshotSchema, (input) =>
+    runtime.browserSnapshot(input)
+  );
   registerTool(server, "browser_get_dom", "Inspect current page or selector DOM/text, externalizing large raw content.", browserGetDomSchema, (input) =>
     runtime.browserGetDom(input)
   );
@@ -46,6 +52,9 @@ export function createRawTraceMcpServer(runtime = new RawTraceRuntime()): McpSer
   );
   registerTool(server, "browser_screenshot", "Capture a page or element screenshot to a local PNG file.", browserScreenshotSchema, (input) =>
     runtime.browserScreenshot(input)
+  );
+  registerTool(server, "browser_screenshot_annotated", "Capture a screenshot with temporary visual bounding-box annotations.", browserScreenshotAnnotatedSchema, (input) =>
+    runtime.browserScreenshotAnnotated(input)
   );
   registerTool(server, "browser_get_network", "Return recent network event summaries from the active/latest trace.", browserGetNetworkSchema, (input) =>
     runtime.browserGetNetwork(input)
@@ -116,6 +125,9 @@ export function createRawTraceMcpServer(runtime = new RawTraceRuntime()): McpSer
     runtime.browserSelectOption(input)
   );
   registerTool(server, "browser_check", "Check or uncheck a checkbox/radio element.", browserCheckSchema, (input) => runtime.browserCheck(input));
+  registerTool(server, "browser_observe_action_result", "Capture before/after snapshots around an action and return a compact diff.", browserObserveActionResultSchema, (input) =>
+    runtime.browserObserveActionResult(input)
+  );
   registerTool(server, "browser_wait_for_response", "Wait for a network response matching filters.", browserWaitForResponseSchema, (input) =>
     runtime.browserWaitForResponse(input)
   );
@@ -151,6 +163,9 @@ export function createRawTraceMcpServer(runtime = new RawTraceRuntime()): McpSer
   );
   registerTool(server, "browser_wait", "Wait for a selector, URL, quiet period, or timeout.", browserWaitSchema, (input) =>
     runtime.browserWait(input)
+  );
+  registerTool(server, "browser_poll_until", "Poll page snapshots until text/url/selector/value/auth conditions match.", browserPollUntilSchema, (input) =>
+    runtime.browserPollUntil(input)
   );
 
   return server;
@@ -223,6 +238,15 @@ const browserLaunchSchema = z.object({
   acknowledgeStorageStateOverwrite: z.boolean().optional()
 });
 
+const browserAttachCdpSchema = z.object({
+  cdpUrl: z.string().url(),
+  pageId: z.string().min(1).optional(),
+  urlContains: z.string().min(1).optional(),
+  titleContains: z.string().min(1).optional(),
+  targetIndex: z.number().int().min(0).optional(),
+  activate: z.boolean().optional()
+});
+
 const browserNavigateSchema = z.object({
   url: z.string().url(),
   waitUntil: z.enum(["load", "domcontentloaded", "networkidle", "commit"]).optional()
@@ -286,6 +310,14 @@ const bodyRefSchema = z.object({
 
 const browserGetStateSchema = rawAcknowledgementSchema;
 
+const browserSnapshotSchema = rawAcknowledgementSchema.extend({
+  selector: z.string().min(1).optional(),
+  maxTextBytes: z.number().int().min(0).optional(),
+  elementsLimit: z.number().int().min(1).optional(),
+  includeInputs: z.boolean().optional(),
+  includeLinks: z.boolean().optional()
+});
+
 const browserGetDomSchema = rawAcknowledgementSchema.extend({
   selector: z.string().min(1).optional(),
   mode: z.enum(["html", "text", "both"]).optional(),
@@ -310,6 +342,23 @@ const browserOptimizeSelectorSchema = rawAcknowledgementSchema.extend({
 
 const browserScreenshotSchema = rawAcknowledgementSchema.extend({
   selector: z.string().min(1).optional(),
+  fullPage: z.boolean().optional(),
+  outputPath: z.string().min(1).optional()
+});
+
+const annotationBoxSchema = z.object({
+  x: z.number(),
+  y: z.number(),
+  width: z.number().min(0),
+  height: z.number().min(0),
+  label: z.string().optional(),
+  color: z.string().optional()
+});
+
+const browserScreenshotAnnotatedSchema = rawAcknowledgementSchema.extend({
+  selector: z.string().min(1).optional(),
+  selectors: z.array(z.string().min(1)).optional(),
+  boxes: z.array(annotationBoxSchema).optional(),
   fullPage: z.boolean().optional(),
   outputPath: z.string().min(1).optional()
 });
@@ -508,6 +557,60 @@ const browserCheckSchema = z.object({
   timeoutMs: z.number().int().positive().optional()
 });
 
+const pollConditionSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("text"),
+    text: z.string().min(1),
+    selector: z.string().min(1).optional(),
+    negate: z.boolean().optional()
+  }),
+  z.object({
+    type: z.literal("url"),
+    contains: z.string().min(1).optional(),
+    equals: z.string().min(1).optional(),
+    regex: z.string().min(1).optional(),
+    negate: z.boolean().optional()
+  }),
+  z.object({
+    type: z.literal("selector"),
+    selector: z.string().min(1),
+    state: z.enum(["attached", "visible", "hidden", "detached"]).optional(),
+    negate: z.boolean().optional()
+  }),
+  z.object({
+    type: z.literal("elementValue"),
+    selector: z.string().min(1),
+    value: z.string().optional(),
+    contains: z.string().min(1).optional(),
+    regex: z.string().min(1).optional(),
+    negate: z.boolean().optional()
+  }),
+  z.object({
+    type: z.literal("authSignal"),
+    loggedInText: z.string().min(1).optional(),
+    loggedOutText: z.string().min(1).optional(),
+    loginUrlContains: z.string().min(1).optional(),
+    loggedInUrlContains: z.string().min(1).optional(),
+    selector: z.string().min(1).optional(),
+    negate: z.boolean().optional()
+  })
+]);
+
+const browserPollUntilSchema = rawAcknowledgementSchema.extend({
+  timeoutMs: z.number().int().positive().optional(),
+  intervalMs: z.number().int().positive().optional(),
+  match: z.enum(["all", "any"]).optional(),
+  conditions: z.array(pollConditionSchema).min(1),
+  snapshot: z
+    .object({
+      maxTextBytes: z.number().int().min(0).optional(),
+      elementsLimit: z.number().int().min(1).optional(),
+      includeInputs: z.boolean().optional(),
+      includeLinks: z.boolean().optional()
+    })
+    .optional()
+});
+
 const browserWaitForResponseSchema = z.object({
   urlContains: z.string().min(1).optional(),
   urlRegex: z.string().min(1).optional(),
@@ -524,6 +627,35 @@ const browserWaitForResponseBodySchema = rawAcknowledgementSchema.extend({
   timeoutMs: z.number().int().positive().optional(),
   maxBytes: z.number().int().min(0).optional(),
   parseJson: z.boolean().optional()
+});
+
+const browserObserveActionSchema = z.discriminatedUnion("type", [
+  browserClickSchema.extend({ type: z.literal("click") }),
+  browserTypeSchema.extend({ type: z.literal("type") }),
+  browserPressSchema.extend({ type: z.literal("press") }),
+  browserCheckSchema.extend({ type: z.literal("check") }),
+  browserSelectOptionSchema.extend({ type: z.literal("select") }),
+  browserHoverSchema.extend({ type: z.literal("hover") }),
+  browserScrollSchema.extend({ type: z.literal("scroll") }),
+  browserReloadSchema.extend({ type: z.literal("reload") }),
+  browserNavigateSchema.extend({ type: z.literal("navigate") }),
+  browserEvalSchema.extend({ type: z.literal("eval") })
+]);
+
+const observeSnapshotOptionsSchema = z.object({
+  selector: z.string().min(1).optional(),
+  maxTextBytes: z.number().int().min(0).optional(),
+  elementsLimit: z.number().int().min(1).optional(),
+  includeInputs: z.boolean().optional(),
+  includeLinks: z.boolean().optional()
+});
+
+const browserObserveActionResultSchema = dangerousEvalAcknowledgementSchema.extend({
+  action: browserObserveActionSchema,
+  beforeSnapshot: observeSnapshotOptionsSchema.optional(),
+  afterSnapshot: observeSnapshotOptionsSchema.optional(),
+  waitAfterMs: z.number().int().min(0).optional(),
+  includeScreenshot: z.boolean().optional()
 });
 
 const browserUploadFileSchema = fileAccessAcknowledgementSchema.extend({
