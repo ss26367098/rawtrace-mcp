@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "rawtrace-mcp",
+  "displayName": "RawTrace MCP",
+  "version": "0.3.0",
+  "description": "Trace flaky browser behavior across DOM, network, WebSocket, redirect, download, and authentication flows.",
+  "author": {
+    "name": "ss26367098",
+    "url": "https://github.com/ss26367098"
+  },
+  "homepage": "https://github.com/ss26367098/rawtrace-mcp#readme",
+  "repository": "https://github.com/ss26367098/rawtrace-mcp",
+  "license": "MIT",
+  "keywords": [
+    "mcp",
+    "playwright",
+    "browser-debugging",
+    "dom",
+    "network",
+    "websocket"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json"
+}

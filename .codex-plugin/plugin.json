@@ -1,0 +1,35 @@
+{
+  "name": "rawtrace-mcp",
+  "version": "0.3.0",
+  "description": "Trace flaky browser behavior across DOM, network, WebSocket, redirect, download, and authentication flows.",
+  "author": {
+    "name": "ss26367098",
+    "url": "https://github.com/ss26367098"
+  },
+  "homepage": "https://github.com/ss26367098/rawtrace-mcp#readme",
+  "repository": "https://github.com/ss26367098/rawtrace-mcp",
+  "license": "MIT",
+  "keywords": [
+    "mcp",
+    "playwright",
+    "browser-debugging",
+    "dom",
+    "network",
+    "websocket"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "RawTrace MCP",
+    "shortDescription": "Trace flaky browser behavior across DOM and network",
+    "longDescription": "Use RawTrace proactively when browser actions have unclear results or timing-sensitive DOM, network, WebSocket, redirect, download, or authentication behavior needs an end-to-end trace.",
+    "developerName": "ss26367098",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Browser debugging",
+      "DOM tracing",
+      "Network tracing"
+    ],
+    "defaultPrompt": "Use $rawtrace-debug-browser to diagnose this flaky browser behavior with RawTrace."
+  }
+}

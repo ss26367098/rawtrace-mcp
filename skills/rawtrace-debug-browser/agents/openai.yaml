@@ -1,0 +1,6 @@
+interface:
+  display_name: "Debug Browser with RawTrace"
+  short_description: "Trace flaky browser behavior across DOM and network"
+  default_prompt: "Use $rawtrace-debug-browser to diagnose this browser failure with RawTrace."
+policy:
+  allow_implicit_invocation: true

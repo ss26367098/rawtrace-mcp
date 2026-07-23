@@ -2,7 +2,7 @@
 import process from "node:process";
 import { Command } from "commander";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { createRawTraceMcpServer } from "./server/mcpServer.js";
+import { createRawTraceMcpServer, TOOL_PROFILES, type ToolProfile } from "./server/mcpServer.js";
 import { startHttpMcpServer, validateHttpSecurity } from "./server/http.js";
 
 export interface CliOptions {
@@ -11,6 +11,7 @@ export interface CliOptions {
   port: number;
   unsafeRemote: boolean;
   authToken?: string;
+  toolProfile: ToolProfile;
 }
 
 export function parseCliArgs(argv: string[]): CliOptions {
@@ -21,6 +22,7 @@ export function parseCliArgs(argv: string[]): CliOptions {
     .option("--transport <transport>", "MCP transport: stdio or http", "stdio")
     .option("--host <host>", "HTTP host", "127.0.0.1")
     .option("--port <port>", "HTTP port", (value) => Number.parseInt(value, 10), 3757)
+    .option("--tool-profile <profile>", "Tool profile: full or agent", "full")
     .option("--unsafe-remote", "Allow HTTP binding to a non-loopback host when paired with --auth-token", false)
     .option("--auth-token <token>", "Bearer token required for non-loopback HTTP");
 
@@ -29,6 +31,7 @@ export function parseCliArgs(argv: string[]): CliOptions {
     transport: string;
     host: string;
     port: number;
+    toolProfile: string;
     unsafeRemote: boolean;
     authToken?: string;
   }>();
@@ -39,19 +42,23 @@ export function parseCliArgs(argv: string[]): CliOptions {
   if (!Number.isInteger(options.port) || options.port <= 0 || options.port > 65535) {
     throw new Error(`Invalid port: ${String(options.port)}`);
   }
+  if (!TOOL_PROFILES.includes(options.toolProfile as ToolProfile)) {
+    throw new Error(`Unsupported tool profile: ${options.toolProfile}. Expected "full" or "agent".`);
+  }
 
   return {
     transport: options.transport,
     host: options.host,
     port: options.port,
     unsafeRemote: options.unsafeRemote,
-    authToken: options.authToken
+    authToken: options.authToken,
+    toolProfile: options.toolProfile as ToolProfile
   };
 }
 
 export async function main(argv = process.argv): Promise<void> {
   const options = parseCliArgs(argv);
-  const server = createRawTraceMcpServer();
+  const server = createRawTraceMcpServer(undefined, options.toolProfile);
 
   if (options.transport === "stdio") {
     const transport = new StdioServerTransport();

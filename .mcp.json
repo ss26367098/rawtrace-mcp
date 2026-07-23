@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "rawtrace": {
+      "command": "node",
+      "args": [
+        "${CLAUDE_PLUGIN_ROOT}/dist/cli.js",
+        "--tool-profile",
+        "agent"
+      ]
+    }
+  }
+}

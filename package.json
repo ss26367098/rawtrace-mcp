@@ -1,6 +1,6 @@
 {
   "name": "rawtrace-mcp",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "A Playwright-powered MCP server for raw DOM mutation and network event tracing.",
   "type": "module",
   "license": "MIT",
@@ -23,7 +23,13 @@
     "docs",
     "README.md",
     "LICENSE",
-    "SECURITY.md"
+    "SECURITY.md",
+    ".codex-plugin",
+    ".claude-plugin",
+    ".mcp.json",
+    ".agents/plugins/marketplace.json",
+    "skills",
+    "evals"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -45,7 +51,7 @@
     "network"
   ],
   "dependencies": {
-    "@modelcontextprotocol/sdk": "1.28.0",
+    "@modelcontextprotocol/sdk": "1.29.0",
     "commander": "^14.0.2",
     "playwright": "^1.60.0",
     "yazl": "^3.3.1",
@@ -60,13 +66,13 @@
     "@types/ws": "^8.18.1",
     "@types/yazl": "^2.4.5",
     "eslint": "^9.39.1",
-    "ts-api-utils": "2.1.0",
+    "ts-api-utils": "2.5.0",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.47.0",
     "vitest": "^4.0.14",
     "ws": "^8.18.3"
   },
   "overrides": {
-    "ts-api-utils": "2.1.0"
+    "ts-api-utils": "2.5.0"
   }
 }

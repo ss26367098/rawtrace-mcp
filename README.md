@@ -16,67 +16,124 @@ RawTrace does not silently mask, redact, or omit sensitive fields by default. Ev
 }
 ```
 
-## Install
+In an explicitly authorized development or test task, the bundled Skill passes this acknowledgement directly instead of asking again. If the target system, account, or data scope is unclear, confirm authorization before capture. Client approval settings still apply.
+
+## Requirements
+
+- Node.js 22 or newer.
+- Chromium available to Playwright or an authorized Chromium CDP endpoint.
+- A client restart, new session, or plugin reload after installation or MCP configuration changes.
+
+## Install as a Codex Plugin
+
+The Codex marketplace entry installs the `rawtrace-mcp@0.3.0` npm package, including its MCP server and shared browser-debugging Skill:
+
+```sh
+codex plugin marketplace add ss26367098/rawtrace-mcp
+codex plugin add rawtrace-mcp@rawtrace
+```
+
+Start a new Codex session after installation. The plugin launches the bundled `dist/cli.js` with the 35-tool `agent` profile; it does not depend on `npx latest` at runtime.
+
+## Install as a Claude Code Plugin
+
+From inside Claude Code:
+
+```text
+/plugin marketplace add ss26367098/rawtrace-mcp
+/plugin install rawtrace-mcp@rawtrace
+/reload-plugins
+```
+
+The equivalent shell commands are:
+
+```sh
+claude plugin marketplace add ss26367098/rawtrace-mcp
+claude plugin install rawtrace-mcp@rawtrace
+```
+
+Claude Code uses the same npm package, MCP configuration, Skill, and version as Codex. Run `claude plugin validate . --strict` when validating a local checkout.
+
+## Direct MCP Install
+
+Install globally if desired:
 
 ```sh
 npm install -g rawtrace-mcp
 ```
 
-For local development:
+The default direct installation remains the complete 59-tool `full` profile. Use `agent` when you want the smaller agent-oriented surface.
+
+Codex with the `agent` profile:
+
+```toml
+[mcp_servers.rawtrace]
+type = "stdio"
+command = "npx"
+args = ["-y", "rawtrace-mcp@0.3.0", "--tool-profile", "agent"]
+startup_timeout_sec = 120
+```
+
+Codex with all 59 tools:
+
+```toml
+[mcp_servers.rawtrace]
+type = "stdio"
+command = "npx"
+args = ["-y", "rawtrace-mcp@0.3.0", "--tool-profile", "full"]
+startup_timeout_sec = 120
+```
+
+Claude Code direct MCP examples:
+
+```sh
+claude mcp add rawtrace -- npx -y rawtrace-mcp@0.3.0 --tool-profile agent
+claude mcp add rawtrace-full -- npx -y rawtrace-mcp@0.3.0 --tool-profile full
+```
+
+For local development, build and point the client at the generated CLI:
 
 ```sh
 npm install
 npm run build
-node dist/cli.js
+node dist/cli.js --tool-profile agent
 ```
-
-## MCP Configuration
-
-Stdio is the default transport:
-
-```toml
-[mcp_servers.rawtrace]
-type = "stdio"
-command = "npx"
-args = ["-y", "rawtrace-mcp"]
-startup_timeout_sec = 120
-```
-
-Codex example:
-
-```toml
-[mcp_servers.rawtrace]
-type = "stdio"
-command = "npx"
-args = ["-y", "rawtrace-mcp"]
-startup_timeout_sec = 120
-```
-
-Claude Code example:
-
-```sh
-claude mcp add rawtrace -- npx -y rawtrace-mcp
-```
-
-Local development:
 
 ```toml
 [mcp_servers.rawtrace]
 type = "stdio"
 command = "node"
-args = ["C:\\path\\to\\rawtrace-mcp\\dist\\cli.js"]
+args = ["C:\\path\\to\\rawtrace-mcp\\dist\\cli.js", "--tool-profile", "agent"]
 startup_timeout_sec = 120
 ```
 
 Streamable HTTP:
 
 ```sh
-rawtrace-mcp --transport http --host 127.0.0.1 --port 3757
+rawtrace-mcp --transport http --host 127.0.0.1 --port 3757 --tool-profile agent
 ```
 
 HTTP binds to `127.0.0.1` by default. Binding to a non-loopback host requires `--unsafe-remote` and `--auth-token`.
 
-After changing MCP client configuration, restart the client or start a new session. The tools should appear with the server name you configured, for example `rawtrace.browser_get_elements`, `rawtrace.monitor_start`, and `rawtrace.monitor_search_events`. RawTrace currently exposes 59 tools; if only a subset appears, verify that Node.js is at least 22, `npx -y rawtrace-mcp` starts successfully, and the MCP client can read its configuration file.
+After changing MCP client configuration, restart the client or start a new session. Claude Code can use `/reload-plugins`. Tool names include the client-assigned namespace, for example `rawtrace.browser_get_elements` or `mcp__plugin_rawtrace-mcp_rawtrace__monitor_start`; match the final RawTrace tool name when following the workflow.
+
+## Tool Profiles and Agent Selection
+
+| Profile | Tools | Intended use |
+| --- | ---: | --- |
+| `full` | 59 | Default for direct CLI/MCP installs; preserves the complete existing interface. |
+| `agent` | 35 | Plugin default; removes multi-tab/history, low-frequency observation, arbitrary eval, cookie/storage, raw bulk event reads, upload, viewport, permission, and geolocation tools. |
+
+An unknown `--tool-profile` value fails immediately with a clear CLI error. The `agent` profile reduces selection noise and risky low-frequency capabilities, but it is not a security boundary: RawTrace outputs remain sensitive and existing per-tool acknowledgement checks remain enforced.
+
+RawTrace advertises server instructions and detailed tool metadata so agents can choose it without the user naming it explicitly. The bundled `rawtrace-debug-browser` Skill applies this decision flow:
+
+1. Use RawTrace proactively for intermittent Playwright/Cypress failures, transient DOM changes, unclear click results, network or WebSocket timing, redirects, downloads, authentication callbacks, or API-body questions that snapshots cannot explain.
+2. For one uncertain interaction, prefer `browser_observe_action_result`.
+3. For a multi-step issue, call `monitor_start`, reproduce the complete flow with RawTrace actions, call `monitor_stop`, then inspect `monitor_get_summary` before targeted `monitor_search_events`, `monitor_search_bodies`, or `monitor_read_artifact`.
+4. Do not invoke RawTrace for static CSS edits, ordinary source summaries, deterministic non-browser work, or simple webpage fact lookup.
+
+The MCP server's original capture defaults remain compatible: a bare authorized `monitor_start` still enables cookie and body capture. The bundled Skill explicitly starts ordinary traces with `captureCookies: false` and `captureBodies: false`, enabling either only when authentication, cookies, or request/response content is actually relevant.
 
 ## Tools
 
@@ -135,6 +192,8 @@ Integration tests launch Chromium. If your environment does not already have Pla
 ```sh
 npx playwright install chromium
 ```
+
+The repeatable proactive-invocation prompts and acceptance thresholds are in [evals/README.md](evals/README.md).
 
 ## Scope
 

@@ -1,0 +1,53 @@
+{
+  "version": "0.3.0",
+  "rules": {
+    "runsPerCase": 2,
+    "positivePassThreshold": "7/8 runs proactively select RawTrace",
+    "negativePassThreshold": "0/6 runs call RawTrace",
+    "sessionRequirement": "Run every trial in a fresh client session without naming RawTrace, MCP, or the bundled skill in the prompt."
+  },
+  "cases": [
+    {
+      "id": "positive-click-no-request",
+      "expected": "invoke",
+      "prompt": "A Playwright test clicks Save, but roughly one run in ten produces no request, no toast, and no navigation; an immediate retry passes. Diagnose the cause in the authorized local test environment and collect evidence for the missing transition.",
+      "expectedWorkflow": "Prefer browser_observe_action_result for one isolated click, or monitor_start and monitor_stop if the full setup must be reproduced."
+    },
+    {
+      "id": "positive-transient-dom",
+      "expected": "invoke",
+      "prompt": "A Cypress test hovers a menu and then clicks a submenu item. The submenu sometimes appears for only a fraction of a second and disappears before the click. Reproduce the timing failure in the authorized staging environment and explain the DOM sequence.",
+      "expectedWorkflow": "Start a trace before hover, reproduce the complete sequence, stop it, summarize, and search targeted DOM events."
+    },
+    {
+      "id": "positive-websocket-ordering",
+      "expected": "invoke",
+      "prompt": "Our browser chat test intermittently receives the first WebSocket message before the UI has processed the subscription acknowledgement, leaving the message list empty. Diagnose the ordering issue in the local test app.",
+      "expectedWorkflow": "Capture the multi-step flow with WebSocket tracing, then use summary and targeted event search."
+    },
+    {
+      "id": "positive-auth-redirect-api-body",
+      "expected": "invoke",
+      "prompt": "After an OAuth callback, the test follows two redirects to the dashboard, but the first profile API call occasionally returns 401 and the page falls back to login. In the authorized test account, determine whether the redirect timing, cookie state, or response payload explains the failure.",
+      "expectedWorkflow": "Use a multi-step trace; enable cookie or body capture only because authentication and response content are directly relevant."
+    },
+    {
+      "id": "negative-static-css",
+      "expected": "do-not-invoke",
+      "prompt": "Change the card border radius from 8px to 12px and update the matching snapshot expectation.",
+      "expectedWorkflow": "Edit and test source normally without RawTrace."
+    },
+    {
+      "id": "negative-source-summary",
+      "expected": "do-not-invoke",
+      "prompt": "Summarize how the request retry helper in this repository works and list its public options.",
+      "expectedWorkflow": "Read and summarize source without RawTrace."
+    },
+    {
+      "id": "negative-simple-web-fact",
+      "expected": "do-not-invoke",
+      "prompt": "What HTTP status code means Too Many Requests? Give the code and its standard reason phrase.",
+      "expectedWorkflow": "Answer directly without RawTrace."
+    }
+  ]
+}

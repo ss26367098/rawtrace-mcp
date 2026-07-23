@@ -16,6 +16,12 @@ Credential/state tools can read or modify cookies, localStorage, sessionStorage,
 
 Do not commit trace bundles to GitHub. The default `.gitignore` excludes common RawTrace output directories, but users are responsible for handling trace artifacts safely.
 
+## Dependency Advisory Exception
+
+RawTrace 0.3.0 uses `@modelcontextprotocol/sdk` 1.29.0. As of July 23, 2026, `npm audit` reports one upstream moderate advisory through the SDK's `@hono/node-server` dependency: [GHSA-frvp-7c67-39w9](https://github.com/advisories/GHSA-frvp-7c67-39w9), a Windows path traversal issue in Hono's `serve-static` implementation.
+
+RawTrace does not import Hono, `@hono/node-server`, or `serve-static`. Its optional HTTP transport uses Node's `node:http` server and the MCP SDK's `StreamableHTTPServerTransport`, and it serves only the `/mcp` protocol endpoint. The vulnerable static-file path is therefore not reachable through RawTrace's implementation. The audit currently proposes downgrading the MCP SDK to 1.24.3 rather than a compatible patched release, so RawTrace retains SDK 1.29.0 and tracks the upstream fix. Production dependencies have no known high or critical advisories at this release.
+
 ## Reporting Security Issues
 
 Please report security issues privately through the repository security advisory flow when available. Do not include raw trace bundles, tokens, cookies, or credentials in public issues.
