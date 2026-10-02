@@ -9,8 +9,9 @@ import { atomic, digest } from '../storage/files.js';
 const ack = z.object({ acknowledgeRawCapture: z.boolean().optional() });
 const session = ack.extend({ sessionId: z.string().min(1) });
 const ref = z.object({ path: z.string(), sha256: z.string().regex(/^[a-f0-9]{64}$/), byteLength: z.number().int().nonnegative() });
+export const RAWTRACE_SERVER_INSTRUCTIONS = 'Use RawTrace for transient DOM and timing-sensitive browser failures. Attach only to an existing authorized Chromium CDP endpoint: capture_targets, capture_start, reproduce using a separate controller, capture_stop, then trace_info/trace_events/trace_state. RawTrace has no browser action tools. Check gaps before interpreting history; time order is not proof of causality. Data tools require acknowledgeRawCapture:true; do not repeat consent already granted for the target and data scope.';
 export function createRawTraceMcpServer(service = new CaptureService()): McpServer {
-  const server = new McpServer({ name: 'rawtrace-mcp', version: '0.3.0' });
+  const server = new McpServer({ name: 'rawtrace-mcp', version: '0.4.0' }, { instructions: RAWTRACE_SERVER_INSTRUCTIONS });
   const register = <T extends z.ZodType>(name: string, description: string, schema: T, handler: (input: z.output<T>) => Promise<any>): void => {
     const add = server.registerTool.bind(server) as any;
     add(name, { description, inputSchema: schema }, async (raw: unknown) => {

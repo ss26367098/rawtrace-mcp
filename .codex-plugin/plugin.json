@@ -1,0 +1,35 @@
+{
+  "name": "rawtrace-mcp",
+  "version": "0.4.0",
+  "description": "Passive Chromium CDP capture: baselines, incremental changes, and queryable browser history.",
+  "author": {
+    "name": "ss26367098",
+    "url": "https://github.com/ss26367098"
+  },
+  "homepage": "https://github.com/ss26367098/rawtrace-mcp#readme",
+  "repository": "https://github.com/ss26367098/rawtrace-mcp",
+  "license": "MIT",
+  "keywords": [
+    "mcp",
+    "playwright",
+    "browser-debugging",
+    "dom",
+    "network",
+    "websocket"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "RawTrace MCP",
+    "shortDescription": "Record incremental DOM and network history",
+    "longDescription": "Attach to an existing authorized Chromium CDP browser. Record selected pages continuously, then query events and reconstruct recorded state. Browser actions stay with your existing controller.",
+    "developerName": "ss26367098",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Browser debugging",
+      "DOM tracing",
+      "Network tracing"
+    ],
+    "defaultPrompt": "Use $rawtrace-debug-browser to diagnose this flaky browser behavior with RawTrace."
+  }
+}

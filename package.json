@@ -1,6 +1,6 @@
 {
   "name": "rawtrace-mcp",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Continuous CDP capture with baseline and incremental browser history for coding agents.",
   "type": "module",
   "license": "MIT",
@@ -23,7 +23,15 @@
     "docs",
     "README.md",
     "LICENSE",
-    "SECURITY.md"
+    "SECURITY.md",
+    ".codex-plugin",
+    ".claude-plugin",
+    ".mcp.json",
+    ".agents/plugins/marketplace.json",
+    "skills",
+    "evals",
+    "README.en.md",
+    "examples"
   ],
   "scripts": {
     "build": "node scripts/build.mjs",
@@ -45,7 +53,7 @@
     "network"
   ],
   "dependencies": {
-    "@modelcontextprotocol/sdk": "1.28.0",
+    "@modelcontextprotocol/sdk": "1.29.0",
     "@rrweb/record": "2.1.6",
     "commander": "^14.0.2",
     "playwright": "^1.60.0",
@@ -59,13 +67,13 @@
     "@types/ws": "^8.18.1",
     "esbuild": "^0.28.2",
     "eslint": "^9.39.1",
-    "ts-api-utils": "2.1.0",
+    "ts-api-utils": "2.5.0",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.47.0",
     "vitest": "^4.0.14",
     "ws": "^8.18.3"
   },
   "overrides": {
-    "ts-api-utils": "2.1.0"
+    "ts-api-utils": "2.5.0"
   }
 }

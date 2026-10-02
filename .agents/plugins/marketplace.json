@@ -1,0 +1,21 @@
+{
+  "name": "rawtrace",
+  "interface": {
+    "displayName": "RawTrace"
+  },
+  "plugins": [
+    {
+      "name": "rawtrace-mcp",
+      "source": {
+        "source": "npm",
+        "package": "rawtrace-mcp",
+        "version": "0.3.0"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}

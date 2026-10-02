@@ -1,0 +1,34 @@
+{
+  "name": "rawtrace",
+  "owner": {
+    "name": "ss26367098"
+  },
+  "plugins": [
+    {
+      "name": "rawtrace-mcp",
+      "displayName": "RawTrace MCP",
+      "source": {
+        "source": "npm",
+        "package": "rawtrace-mcp",
+        "version": "0.3.0"
+      },
+      "description": "Trace flaky browser behavior across DOM, network, WebSocket, redirect, download, and authentication flows.",
+      "version": "0.3.0",
+      "author": {
+        "name": "ss26367098"
+      },
+      "homepage": "https://github.com/ss26367098/rawtrace-mcp#readme",
+      "repository": "https://github.com/ss26367098/rawtrace-mcp",
+      "license": "MIT",
+      "keywords": [
+        "mcp",
+        "playwright",
+        "browser-debugging",
+        "dom",
+        "network",
+        "websocket"
+      ],
+      "category": "development"
+    }
+  ]
+}

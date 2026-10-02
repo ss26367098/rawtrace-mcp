@@ -3,7 +3,7 @@ import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import assert from 'node:assert/strict';
-import { chromium } from 'playwright';
+import { openExampleBrowser } from '../../examples/browser.mjs';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 
@@ -13,8 +13,8 @@ const url = `http://127.0.0.1:${server.address().port}`;
 const portServer = createServer(); await new Promise(r => portServer.listen(0, '127.0.0.1', r));
 const port = portServer.address().port; await new Promise(r => portServer.close(r));
 const root = await mkdtemp(join(tmpdir(), 'rawtrace-real-v2-'));
-const context = await chromium.launchPersistentContext(join(root, 'profile'), { headless: true, args: [`--remote-debugging-port=${port}`] });
-const client = new Client({ name: 'rawtrace-real-run', version: '0.3.0' });
+const { context } = await openExampleBrowser({ port, headless: true, url });
+const client = new Client({ name: 'rawtrace-real-run', version: '0.4.0' });
 const called = new Set();
 const call = async (name, args = {}) => {
   called.add(name);

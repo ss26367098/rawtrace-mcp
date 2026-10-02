@@ -1,6 +1,6 @@
 # Contributing
 
-RawTrace 0.3 is a passive recorder. Do not reintroduce browser control, credential editing, arbitrary eval, visual replay, or default redaction.
+RawTrace 0.4 is a passive recorder. Do not reintroduce browser control, credential editing, arbitrary eval, visual replay, or default redaction.
 
 Keep connection, capture, session storage, reconstruction and MCP interfaces separate. Browser scripts are bundled locally. Do not load recorder code from a CDN.
 
