@@ -90,7 +90,7 @@ async function handleRequest(
       return;
     }
 
-    if (req.method !== "GET" && req.method !== "POST") {
+    if (req.method !== "GET" && req.method !== "POST" && req.method !== 'DELETE') {
       writeJson(res, 405, { error: "method_not_allowed" });
       return;
     }
@@ -160,7 +160,7 @@ function addCorsHeaders(res: ServerResponse): void {
 function corsHeaders(): Record<string, string> {
   return {
     "access-control-allow-origin": "http://localhost",
-    "access-control-allow-methods": "GET, POST, OPTIONS",
+    "access-control-allow-methods": "GET, POST, DELETE, OPTIONS",
     "access-control-allow-headers": "content-type, authorization, mcp-session-id"
   };
 }

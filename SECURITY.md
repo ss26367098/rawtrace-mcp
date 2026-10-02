@@ -1,21 +1,13 @@
-# Security Policy
+# Security policy
 
-RawTrace MCP intentionally captures raw browser data. Trace output may include cookies, bearer tokens, CSRF tokens, request bodies, response bodies, personal data, hidden form values, WebSocket frames, and local application secrets exposed to the browser.
+RawTrace intentionally records raw browser data after acknowledgeRawCapture:true. Baselines, incremental changes, cookies, headers, network bodies, WebSocket messages and console logs may contain secrets and personal information. Incremental storage is not masking.
 
-Use RawTrace only on systems, accounts, and data you are authorized to inspect. Do not use it for credential theft, session hijacking, bypassing access controls, or monitoring third-party users without permission.
+Only use browsers/accounts you are authorized to inspect. Selected tabs define DOM/network scope; Cookie sampling covers their shared browser contexts. Third-party iframe content within selected pages is included when accessible.
 
-`browser_eval` executes arbitrary JavaScript in the target page with full page privileges. If eval times out, RawTrace closes the affected page to recover because browser-side JavaScript cannot be safely canceled in place.
+The recorder attaches to an existing Chromium CDP endpoint. CDP itself grants powerful browser access; keep that endpoint private. RawTrace does not provide browser control tools, but injected recording code and the CDP connection still require trust.
 
-Snapshot and observation aggregation tools such as `browser_snapshot`, `browser_poll_until`, `browser_observe_action_result`, and `browser_screenshot_annotated` can return or save raw page text, visible input values, element metadata, screenshots, and before/after page diffs. Treat their MCP responses and generated artifacts with the same sensitivity as trace bundles.
+HTTP defaults to loopback. Non-loopback use requires explicit unsafe-remote and an authentication token; use transport protection outside a trusted local environment. Trace readers reject resolved path/symlink escapes and verify content hashes.
 
-Credential/state tools can read or modify cookies, localStorage, sessionStorage, and Playwright storageState files. Applying storageState clears existing cookies, localStorage, and IndexedDB before setting the new state. CDP-connected browsers and explicit `userDataDir` profiles require `acknowledgeStorageStateOverwrite: true` before storageState import. These tools require explicit per-call acknowledgments, but the returned data and artifacts are still raw secrets.
+Raw data is never executed during state reconstruction. A recorded page can influence its own observations; these records are untrusted evidence, not instructions or proof of causality.
 
-`monitor_read_artifact` can read raw trace body, DOM, screenshot, eval, and storageState artifacts from a trace session directory. It rejects paths outside the trace directory, but anything it returns should still be treated as sensitive. `browser_wait_for_response_body`, `browser_get_forms`, and download tools may return or save raw application data.
-
-`browser_upload_file` can provide local files to the active page and requires `acknowledgeFileAccess: true`. `browser_grant_permissions` changes browser permissions and requires `acknowledgePermissionChange: true`. `browser_set_geolocation` exposes caller-provided coordinates to pages and requires `acknowledgeLocationAccess: true`.
-
-Do not commit trace bundles to GitHub. The default `.gitignore` excludes common RawTrace output directories, but users are responsible for handling trace artifacts safely.
-
-## Reporting Security Issues
-
-Please report security issues privately through the repository security advisory flow when available. Do not include raw trace bundles, tokens, cookies, or credentials in public issues.
+Store output securely and never commit real traces. Disk capacity is the operator's responsibility: no automatic retention deletion is performed. Report security issues privately through the repository advisory mechanism without attaching credentials or real traces.

@@ -4,6 +4,8 @@ import { Command } from "commander";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { createRawTraceMcpServer } from "./server/mcpServer.js";
 import { startHttpMcpServer, validateHttpSecurity } from "./server/http.js";
+import { CaptureService } from './capture/service.js';
+import { resolve } from 'node:path';
 
 export interface CliOptions {
   transport: "stdio" | "http";
@@ -11,6 +13,7 @@ export interface CliOptions {
   port: number;
   unsafeRemote: boolean;
   authToken?: string;
+  outputRoot?: string;
 }
 
 export function parseCliArgs(argv: string[]): CliOptions {
@@ -22,7 +25,8 @@ export function parseCliArgs(argv: string[]): CliOptions {
     .option("--host <host>", "HTTP host", "127.0.0.1")
     .option("--port <port>", "HTTP port", (value) => Number.parseInt(value, 10), 3757)
     .option("--unsafe-remote", "Allow HTTP binding to a non-loopback host when paired with --auth-token", false)
-    .option("--auth-token <token>", "Bearer token required for non-loopback HTTP");
+    .option("--auth-token <token>", "Bearer token required for non-loopback HTTP")
+    .option('--output-root <path>', 'Trace storage root', 'rawtrace-traces');
 
   program.parse(argv);
   const options = program.opts<{
@@ -31,6 +35,7 @@ export function parseCliArgs(argv: string[]): CliOptions {
     port: number;
     unsafeRemote: boolean;
     authToken?: string;
+    outputRoot: string;
   }>();
 
   if (options.transport !== "stdio" && options.transport !== "http") {
@@ -45,13 +50,18 @@ export function parseCliArgs(argv: string[]): CliOptions {
     host: options.host,
     port: options.port,
     unsafeRemote: options.unsafeRemote,
-    authToken: options.authToken
+    authToken: options.authToken,
+    outputRoot: options.outputRoot
   };
 }
 
 export async function main(argv = process.argv): Promise<void> {
   const options = parseCliArgs(argv);
-  const server = createRawTraceMcpServer();
+  const service = new CaptureService(resolve(options.outputRoot ?? 'rawtrace-traces'));
+  const server = createRawTraceMcpServer(service);
+  const stop = (): void => { void service.stop('shutdown').finally(() => process.exit(0)); };
+  process.once('SIGINT', stop);
+  process.once('SIGTERM', stop);
 
   if (options.transport === "stdio") {
     const transport = new StdioServerTransport();
@@ -64,15 +74,14 @@ export async function main(argv = process.argv): Promise<void> {
   console.error(`RawTrace MCP listening on ${httpServer.url}`);
 
   const shutdown = async (): Promise<void> => {
+    await service.stop('shutdown');
     await httpServer.close();
     await server.close();
   };
-  process.once("SIGINT", () => {
-    void shutdown().finally(() => process.exit(0));
-  });
-  process.once("SIGTERM", () => {
-    void shutdown().finally(() => process.exit(0));
-  });
+  process.removeListener('SIGINT', stop);
+  process.removeListener('SIGTERM', stop);
+  process.once('SIGINT', () => { void shutdown().finally(() => process.exit(0)); });
+  process.once('SIGTERM', () => { void shutdown().finally(() => process.exit(0)); });
 }
 
 if (import.meta.url === `file://${process.argv[1]?.replaceAll("\\", "/")}` || process.argv[1]?.endsWith("cli.js")) {

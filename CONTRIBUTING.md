@@ -1,19 +1,11 @@
 # Contributing
 
-RawTrace MCP is raw-capture-first. Changes must preserve raw observability unless an option explicitly says otherwise.
+RawTrace 0.3 is a passive recorder. Do not reintroduce browser control, credential editing, arbitrary eval, visual replay, or default redaction.
 
-Before opening a pull request:
+Keep connection, capture, session storage, reconstruction and MCP interfaces separate. Browser scripts are bundled locally. Do not load recorder code from a CDN.
 
-```sh
-npm run typecheck
-npm run lint
-npm test
-```
+Keep raw payloads in trace artifacts, not oversized MCP responses. Treat trace schema changes as public interface changes. Keep v1 documentation for historical readers; never rewrite real trace data during migrations.
 
-Guidelines:
+Before submitting changes run npm run typecheck, npm run lint, npm test and npm run test:real-run. Use local synthetic fixtures and an independently controlled browser. Never include real credentials or traces in tests.
 
-- Do not add default redaction, masking, or silent omission of cookies, headers, bodies, DOM text, or tokens.
-- Keep MCP tool responses compact. Raw streams belong on disk and should be read through chunked APIs.
-- Treat trace schema changes as public interface changes. Breaking schema changes require a major schema version bump.
-- Keep HTTP defaults local-first and safe by default.
-- Never include real trace bundles, credentials, or session data in tests or fixtures.
+Production code never starts, navigates or closes external pages. Cleanup must release only this recorder's hooks and CDP connection. Test iframe checkouts, sequence gaps, restart recovery and bounded queues when changing capture behavior.

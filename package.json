@@ -1,7 +1,7 @@
 {
   "name": "rawtrace-mcp",
-  "version": "0.2.1",
-  "description": "A Playwright-powered MCP server for raw DOM mutation and network event tracing.",
+  "version": "0.3.0",
+  "description": "Continuous CDP capture with baseline and incremental browser history for coding agents.",
   "type": "module",
   "license": "MIT",
   "homepage": "https://github.com/ss26367098/rawtrace-mcp#readme",
@@ -26,7 +26,7 @@
     "SECURITY.md"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "node scripts/build.mjs",
     "typecheck": "tsc -p tsconfig.test.json --noEmit",
     "lint": "eslint .",
     "test": "npm run build && vitest run",
@@ -46,11 +46,10 @@
   ],
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.28.0",
+    "@rrweb/record": "2.1.6",
     "commander": "^14.0.2",
     "playwright": "^1.60.0",
-    "yazl": "^3.3.1",
-    "zod": "^4.1.13",
-    "zod-to-json-schema": "^3.25.2"
+    "zod": "^4.1.13"
   },
   "devDependencies": {
     "@emnapi/core": "^1.11.1",
@@ -58,7 +57,7 @@
     "@eslint/js": "^9.39.1",
     "@types/node": "^24.10.1",
     "@types/ws": "^8.18.1",
-    "@types/yazl": "^2.4.5",
+    "esbuild": "^0.28.2",
     "eslint": "^9.39.1",
     "ts-api-utils": "2.1.0",
     "typescript": "^5.9.3",

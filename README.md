@@ -1,143 +1,86 @@
-# RawTrace MCP
+# RawTrace MCP 0.3
 
-RawTrace MCP is a local MCP server that wraps Playwright and Chrome DevTools Protocol to record raw DOM mutation and network event streams while an AI coding agent interacts with a web page.
+A local, passive Chromium recorder for coding agents. Another tool operates the browser; RawTrace attaches over CDP and records selected pages as **document baselines + incremental changes + checkpoints**.
 
-It is designed for building and debugging complex Playwright automations where post-click snapshots are not enough.
+## What changed
 
-## Warning
+Version 0.3 is a breaking replacement of the 0.2 browser automation server. All `browser_*` and `monitor_*` tools were removed. There are exactly nine capture/query tools. No browser launching, clicking, navigation, eval, screenshots, credential editing, ZIP export, or visual player is provided.
 
-RawTrace MCP records raw browser data by design. It may capture cookies, authorization headers, request bodies, response bodies, tokens, personal information, WebSocket messages, hidden form values, and DOM text. Treat every trace as sensitive. Do not commit traces to GitHub. Use only on systems and accounts you are authorized to inspect.
+DOM recording uses @rrweb/record 2.1.6. The query layer reconstructs serialized state without executing recorded scripts or fetching resources. Network, WebSocket and Console are event streams, not DOM diffs.
 
-RawTrace does not silently mask, redact, or omit sensitive fields by default. Every `monitor_start` call must include:
+## Install and connect
 
-```json
-{
-  "acknowledgeRawCapture": true
-}
-```
-
-## Install
-
-```sh
-npm install -g rawtrace-mcp
-```
-
-For local development:
+Requires Node.js 22+ and an existing Chromium browser with a reachable CDP endpoint. A controller such as Playwright must launch/configure that browser; a built-in browser that does not expose CDP cannot be attached automatically. Do not expose a debug port publicly.
 
 ```sh
 npm install
 npm run build
-node dist/cli.js
+node dist/cli.js --output-root ./rawtrace-traces
 ```
 
-## MCP Configuration
+The recorder never creates a page or closes the external browser. Select pages explicitly with IDs from `capture_targets`. Their navigations and iframe documents are followed; unselected pages and popups are excluded. Cookie state is shared by each selected page's browser context and is therefore broader than the selected tabs.
 
-Stdio is the default transport:
-
-```toml
-[mcp_servers.rawtrace]
-type = "stdio"
-command = "npx"
-args = ["-y", "rawtrace-mcp"]
-startup_timeout_sec = 120
-```
-
-Codex example:
-
-```toml
-[mcp_servers.rawtrace]
-type = "stdio"
-command = "npx"
-args = ["-y", "rawtrace-mcp"]
-startup_timeout_sec = 120
-```
-
-Claude Code example:
+MCP clients can run `node /absolute/path/to/dist/cli.js` over stdio. Optional HTTP:
 
 ```sh
-claude mcp add rawtrace -- npx -y rawtrace-mcp
+node dist/cli.js --transport http --host 127.0.0.1 --port 3757
 ```
 
-Local development:
+The endpoint is `/mcp`. Non-loopback binding requires `--unsafe-remote --auth-token TOKEN`.
 
-```toml
-[mcp_servers.rawtrace]
-type = "stdio"
-command = "node"
-args = ["C:\\path\\to\\rawtrace-mcp\\dist\\cli.js"]
-startup_timeout_sec = 120
-```
+## Workflow
 
-Streamable HTTP:
+1. `capture_targets({cdpUrl, acknowledgeRawCapture:true})`.
+2. `capture_start({cdpUrl, targetIds:[...], acknowledgeRawCapture:true})`.
+3. Operate the selected browser using your existing controller.
+4. Query `capture_status`, `trace_events` or `trace_state` while recording.
+5. `capture_stop({})` flushes and disconnects. Saved sessions remain queryable after restarting this server with the same output root.
 
-```sh
-rawtrace-mcp --transport http --host 127.0.0.1 --port 3757
-```
+| Tool | Purpose |
+| --- | --- |
+| capture_targets | Discover existing pages |
+| capture_start | Start one session covering explicitly selected pages |
+| capture_status | Counters, queue state, gaps, errors |
+| capture_stop | Flush and disconnect |
+| trace_list | Discover persisted sessions, including legacy v1 |
+| trace_info | Manifest, checkpoint index, recovery diagnostics |
+| trace_events | Filter and paginate recorded events |
+| trace_state | Reconstruct tree or text at a sequence/time |
+| trace_artifact | Read bounded byte ranges of an artifact |
 
-HTTP binds to `127.0.0.1` by default. Binding to a non-loopback host requires `--unsafe-remote` and `--auth-token`.
+All discovery/data-read tools and capture_start require `acknowledgeRawCapture:true`. capture_stop does not. All six capture categories default to enabled; disable them individually with captureDom, captureNetwork, captureWebSockets, captureCookies, captureConsole, captureFrames. maxBodyBytes defaults to 20,000,000 (MCP maximum 100,000,000).
 
-After changing MCP client configuration, restart the client or start a new session. The tools should appear with the server name you configured, for example `rawtrace.browser_get_elements`, `rawtrace.monitor_start`, and `rawtrace.monitor_search_events`. RawTrace currently exposes 59 tools; if only a subset appears, verify that Node.js is at least 22, `npx -y rawtrace-mcp` starts successfully, and the MCP client can read its configuration file.
+Event queries accept sessionId, afterSeq, untilSeq, fromTime, toTime, source, type, pageId, documentId, nodeId, urlContains, text, searchBodies and limit. limit defaults to 100 and is capped at 1000. Body text search must be explicitly enabled. The URL filter matches serialized event payload URL content. Use nextAfterSeq when hasMore is true.
 
-## Tools
+State queries require sessionId and pageId; optionally provide **either** atSeq **or** atTime, and format tree/text. Time values are epoch milliseconds. Text is concatenated recorded text nodes (excluding script/style), not a layout-aware innerText or accessibility snapshot.
 
-RawTrace MCP currently exposes 59 MCP tools:
+Responses larger than 64 KB from session queries become JSON artifact references. Read them using trace_artifact with ref, offset and maxBytes (at most 32,000; UTF-8 reads are additionally capped at 8,000 bytes to bound JSON escaping). For byte-exact chunk assembly, request base64; independent UTF-8 chunks can split a multibyte character.
 
-- Browser lifecycle and tabs: `browser_launch`, `browser_attach_cdp`, `browser_close`, `browser_list_tabs`, `browser_new_tab`, `browser_switch_tab`, `browser_close_tab`.
-- Navigation: `browser_navigate`, `browser_reload`, `browser_go_back`, `browser_go_forward`.
-- Page observation: `browser_get_state`, `browser_snapshot`, `browser_get_dom`, `browser_get_elements`, `browser_optimize_selector`, `browser_get_accessibility`, `browser_get_forms`, `browser_screenshot`, `browser_screenshot_annotated`, `browser_get_network`.
-- Browser actions: `browser_click`, `browser_type`, `browser_press`, `browser_hover`, `browser_scroll`, `browser_select_option`, `browser_check`, `browser_fill_form`, `browser_wait`, `browser_poll_until`, `browser_observe_action_result`, `browser_wait_for_response`, `browser_wait_for_response_body`, `browser_handle_dialog`.
-- Files, downloads, and environment: `browser_upload_file`, `browser_wait_for_download`, `browser_get_downloads`, `browser_set_viewport`, `browser_grant_permissions`, `browser_set_geolocation`.
-- Raw trace tools: `monitor_start`, `monitor_stop`, `monitor_list_sessions`, `monitor_get_manifest`, `monitor_get_summary`, `monitor_read_events`, `monitor_search_events`, `monitor_search_bodies`, `monitor_read_artifact`, `monitor_export`.
-- Dangerous page execution: `browser_eval`.
-- Credential and browser state tools: `browser_get_cookies`, `browser_set_cookies`, `browser_clear_cookies`, `browser_get_storage`, `browser_set_storage`, `browser_export_storage_state`, `browser_import_storage_state`.
+## Storage and limits
 
-Inspection tools that read raw page content, forms, response bodies, downloads, screenshots, or trace artifacts require `acknowledgeRawCapture: true`, the same safety acknowledgment used by `monitor_start`. `browser_snapshot`, `browser_poll_until`, `browser_observe_action_result`, and `browser_screenshot_annotated` can return or save raw page text, input values, element metadata, screenshots, and before/after diffs. `browser_eval` also requires `acknowledgeDangerousEval: true`; `browser_observe_action_result` requires the same dangerous acknowledgment when its action is `eval`. If eval times out, RawTrace closes the timed-out page and switches to another or new page, because browser-side JavaScript evaluation cannot be safely canceled in place.
+See [trace schema v2](docs/trace-schema-v2.md). Logs rotate at 64 MiB. Artifact bytes are SHA-256 addressed and deduplicated within each trace. Checkpoints occur after 60 seconds with changes or 5,000 incremental events. An unchanged page does not repeatedly snapshot.
 
-Credential/state tools require both `acknowledgeRawCapture: true` and `acknowledgeCredentialAccess: true`; `browser_launch` requires the same acknowledgments when using `storageStatePath`. Applying Playwright `storageState` clears existing cookies, localStorage, and IndexedDB before importing the new state. For CDP-connected browsers or explicit `userDataDir` profiles, `browser_launch({ storageStatePath })` and `browser_import_storage_state` also require `acknowledgeStorageStateOverwrite: true`.
+There is no total session size limit and no automatic deletion. You manage disk capacity. Browser buffers are bounded at 8 MiB; writer queue at 32 MiB; pending collector work is capped. Overflow, disconnects and failed reads are reported rather than silently treated as complete recording.
 
-`browser_upload_file` requires `acknowledgeFileAccess: true`. `browser_grant_permissions` requires `acknowledgePermissionChange: true`. `browser_set_geolocation` requires `acknowledgeLocationAccess: true`. These acknowledgments are separate so a caller cannot accidentally treat raw capture consent as file, permission, or location consent.
+Cookies are sampled every second, with an initial baseline and a final comparison. Changes between samples may be missed. Already completed network requests and earlier WebSocket messages cannot be recovered when capture starts.
 
-When no monitor is running, large DOM/text, snapshots, screenshots, eval results, response bodies, and storageState artifacts are written under `rawtrace-traces/inspections/`. When a monitor is active, large raw values are written under the trace `bodies/` directory and returned by reference. `monitor_read_artifact` can read only files inside a trace session directory and rejects path traversal such as `../`.
+Cross-origin iframe checkpoints are assembled asynchronously; a query between the parent checkpoint and child response reports the missing document. Closed shadow roots, canvas/WebGL and pure visual changes are outside reconstruction scope. CSSOM/media events are not reconstructed. DOM events represent observed mutation batches, not every intermediate synchronous state.
 
-## Trace Output
+Source clocks and Node receive times are retained. Browser epoch clocks are calibrated at attachment; CDP clocks use request wallTime when available. These are estimates, not a globally causal clock or drift-compensated distributed tracing system.
 
-Trace bundles are written under `rawtrace-traces/` by default:
+Legacy v1 files are left untouched. trace_list labels them; v2 queries reject them. Use version 0.2.x if you need its old reader.
 
-```text
-trace_2026-06-14T064500Z_ab12cd34/
-  manifest.json
-  actions.ndjson
-  dom.ndjson
-  network.ndjson
-  cookies.ndjson
-  websocket.ndjson
-  console.ndjson
-  frames.ndjson
-  bodies/
-  snapshots/
-```
+## Raw data
 
-The stable v1 trace schema is documented in [docs/trace-schema-v1.md](docs/trace-schema-v1.md).
-
-`monitor_read_events` returns at most 1000 events per call. Use `offset`/`limit` pagination for browsing or `monitor_search_events` when looking for a specific endpoint, DOM text, or event type. Search includes inline event fields and DOM `htmlRef`/`textRef` artifacts; it does not expand network request or response body files by default. Use `monitor_search_bodies` when you want to search raw request or response body files, and `monitor_read_artifact` when you need to read a specific `bodyRef`, `htmlRef`, `textRef`, or snapshot from the trace directory.
+Incremental storage is **not redaction**. Initial snapshots and deltas can contain passwords, tokens, cookies, input values and personal information. Default rrweb masking/blocking conventions are disabled intentionally. Store traces locally and do not commit or share real captures.
 
 ## Development
 
 ```sh
-npm install
 npm run typecheck
 npm run lint
 npm test
+npm run test:real-run
 ```
 
-Integration tests launch Chromium. If your environment does not already have Playwright browsers installed, run:
-
-```sh
-npx playwright install chromium
-```
-
-## Scope
-
-RawTrace MCP is a raw event recorder for automation development. It is not an AI decision-making agent, selector-healing system, CAPTCHA solver, anti-bot bypass tool, cloud browser service, or cross-browser recorder.
-
-The public open-source surface for v1 is the `rawtrace-mcp` CLI, MCP tools, and documented trace schema. Internal TypeScript modules are not a stable library API and are not covered by SemVer compatibility promises yet.
+Integration tests use a separate headless Chromium browser controlled by Playwright. The production recorder does not launch a browser. Build bundles the browser-side recorder locally; no CDN scripts are loaded.
